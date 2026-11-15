@@ -58,7 +58,7 @@ export function SettingsPage() {
               <div className="flex-1">
                 <h2 className="font-medium">Version</h2>
                 <p className="text-sm text-muted-foreground">
-                  Choicer Voicer Studio
+                  The Choicer Voicer At Home
                 </p>
               </div>
               <span className="text-sm text-muted-foreground">{version}</span>

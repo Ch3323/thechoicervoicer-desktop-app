@@ -837,7 +837,7 @@ function HomeSettings() {
           <Info aria-hidden="true" />
           <span>
             <strong>Version</strong>
-            <small>Choicer Voicer Studio</small>
+            <small>The Choicer Voicer At Home</small>
           </span>
           <b>{version}</b>
         </div>

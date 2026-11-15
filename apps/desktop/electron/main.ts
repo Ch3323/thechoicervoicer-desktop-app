@@ -40,7 +40,7 @@ async function duringWrite<T>(operation: () => Promise<T>): Promise<T> {
 
 function createMainWindow(): void {
   const window = new BrowserWindow({
-    title: 'Choicer Voicer Studio',
+    title: 'The Choicer Voicer At Home',
     width: 1120,
     height: 760,
     minWidth: 880,

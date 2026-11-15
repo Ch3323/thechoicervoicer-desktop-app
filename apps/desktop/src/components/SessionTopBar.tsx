@@ -19,7 +19,7 @@ export function SessionTopBar({
       <Link
         className="session-topbar-brand"
         to="/"
-        aria-label="Choicer Voicer Studio home"
+        aria-label="The Choicer Voicer At Home home"
       >
         <span className="session-topbar-mark">
           <AudioLines aria-hidden="true" />

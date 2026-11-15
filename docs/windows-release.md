@@ -1,10 +1,10 @@
 # Windows releases and updates
 
-The desktop application uses an x64 NSIS installer. It bundles Electron, application assets, production dependencies, and `ffmpeg-static`; users do not need Bun or Node.js. The app ID and product name are stable across versions. Library metadata, private imported ZIP snapshots, recordings, previews, room cache, and Chromium settings live under Electron `userData`, outside the installation directory. Updates replace the application, not that data directory.
+The desktop application uses an x64 NSIS installer. It bundles Electron, application assets, production dependencies, and `ffmpeg-static`; users do not need Bun or Node.js. The app ID and package name remain stable across versions, so changing the displayed product name in 1.0.1 keeps the same `%APPDATA%\@studio\desktop` user data directory. Library metadata, private imported ZIP snapshots, recordings, previews, room cache, and Chromium settings live there, outside the installation directory. Updates replace the application, not that data directory.
 
 ## Unsigned hobby release
 
-No certificate is needed for this route. Keep the GitHub repository public, commit the source, and push a tag named `hobby-v<version>` (for the current source: `hobby-v1.0.0`). The separate `hobby-release.yml` workflow runs the same checks and publishes the NSIS installer, blockmap, and `latest.yml` to a public GitHub Release. Do not mark it as a prerelease: the update client reads the latest public release.
+No certificate is needed for this route. Keep the GitHub repository public, commit the source, and push a tag named `hobby-v<version>` (for the current source: `hobby-v1.0.1`). The separate `hobby-release.yml` workflow runs the same checks and publishes the NSIS installer, blockmap, and `latest.yml` to a public GitHub Release. Do not mark it as a prerelease: the update client reads the latest public release.
 
 Windows may display an unknown publisher or SmartScreen warning. The unsigned build skips the updater's Authenticode signature check, so anyone able to replace the GitHub release assets could distribute a malicious update to users of this channel. Protect GitHub access and use this route only for trusted hobby testers. Do not mix signed production and unsigned hobby releases in the same update feed; existing signed installs should stay on a signed feed.
 

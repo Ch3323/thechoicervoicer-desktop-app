@@ -5,7 +5,7 @@ const unsignedHobby = process.env.DUB_STUDIO_UNSIGNED_HOBBY === '1'
 
 module.exports = {
   appId: 'studio.collaborative.dubbing',
-  productName: 'Collaborative Dubbing Studio',
+  productName: 'The Choicer Voicer At Home',
   directories: { output: 'release' },
   files: ['out/**/*', 'package.json'],
   asar: true,

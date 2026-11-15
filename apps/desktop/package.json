@@ -1,9 +1,9 @@
 {
   "name": "@studio/desktop",
   "private": true,
-  "version": "1.0.0",
-  "description": "Desktop foundation for a collaborative dubbing studio",
-  "author": "Collaborative Dubbing Studio contributors",
+  "version": "1.0.1",
+  "description": "The Choicer Voicer At Home desktop app",
+  "author": "Tapitti",
   "main": "./out/main/main.js",
   "scripts": {
     "install:electron": "install-electron",
