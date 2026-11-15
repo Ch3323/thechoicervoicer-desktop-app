@@ -1,0 +1,303 @@
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, CheckCircle2, FolderOpen, Film } from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import {
+  buildAudioTimeline,
+  type DubPack,
+  type DubbingProject,
+  type ExportOptions,
+  type ExportResult,
+  type RecordingTake,
+} from '@studio/shared'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
+
+export function ExportPage() {
+  const { projectId } = useParams()
+  const [project, setProject] = useState<DubbingProject | null>(null)
+  const [pack, setPack] = useState<DubPack | null>(null)
+  const [takes, setTakes] = useState<RecordingTake[]>([])
+  const [options, setOptions] = useState<ExportOptions>({
+    useBackingTrack: true,
+    requireComplete: true,
+  })
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [message, setMessage] = useState('')
+  const [result, setResult] = useState<ExportResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    if (!projectId) return
+    Promise.all([
+      window.studio.listProjects(),
+      window.studio.listPacks(),
+      window.studio.listTakes(projectId),
+    ]).then(
+      ([projects, packs, savedTakes]) => {
+        if (!active) return
+        const foundProject = projects.find((item) => item.id === projectId)
+        const foundPack = packs.find((item) => item.id === foundProject?.packId)
+        if (!foundProject || !foundPack) {
+          setError('Project or Dub Pack could not be found.')
+          return
+        }
+        setProject(foundProject)
+        setPack(foundPack)
+        setTakes(savedTakes)
+        setOptions((current) => ({
+          ...current,
+          useBackingTrack: Boolean(foundPack.backingTrackRef),
+        }))
+      },
+      (reason) => {
+        if (active) setError(String(reason))
+      },
+    )
+    const unsubscribe = window.studio.onExportProgress((update) => {
+      if (update.projectId !== projectId || !active) return
+      setProgress(update.percent)
+      setMessage(update.message)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [projectId])
+
+  const timeline = useMemo(
+    () => (pack && project ? buildAudioTimeline(pack, project, takes) : null),
+    [pack, project, takes],
+  )
+
+  async function startExport() {
+    if (!project) return
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    setProgress(0)
+    setMessage('Choose an output file…')
+    try {
+      const finished = await window.studio.exportProject(project.id, options)
+      if (finished) {
+        setResult(finished)
+        const updated = (await window.studio.listProjects()).find(
+          (item) => item.id === project.id,
+        )
+        if (updated) setProject(updated)
+      } else setMessage('Export canceled')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      setMessage('Export failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reveal() {
+    if (!project) return
+    try {
+      await window.studio.revealExport(project.id)
+      setError(null)
+    } catch (reason) {
+      setError(String(reason))
+    }
+  }
+
+  return (
+    <div className="studio-app studio-inner-page min-h-screen bg-background text-foreground">
+      <div className="mx-auto max-w-5xl px-6 py-7 sm:px-10">
+        <header className="border-b border-border pb-7">
+          <Button asChild variant="ghost" size="sm">
+            <Link to={projectId ? `/workspace/${projectId}` : '/projects'}>
+              <ArrowLeft aria-hidden="true" /> Workspace
+            </Link>
+          </Button>
+        </header>
+        <main className="pt-12">
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-primary">
+            Single-player output
+          </p>
+          <h1 className="text-4xl font-semibold">Export video</h1>
+          {!project || !pack || !timeline ? (
+            <p
+              className={`mt-8 ${error ? 'text-red-300' : 'text-muted-foreground'}`}
+              role={error ? 'alert' : undefined}
+            >
+              {error ?? 'Loading project…'}
+            </p>
+          ) : (
+            <div className="mt-9 grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+              <div className="space-y-6">
+                <section className="rounded-2xl border border-border bg-card p-6">
+                  <div className="flex items-center gap-3">
+                    <Film className="size-5 text-primary" aria-hidden="true" />
+                    <h2 className="text-lg font-semibold">
+                      {pack.metadata.title}
+                    </h2>
+                  </div>
+                  <p className="mt-4 text-sm text-muted-foreground">
+                    {timeline.requiredDialogueIds.length -
+                      timeline.missingDialogueIds.length}{' '}
+                    of {timeline.requiredDialogueIds.length} assigned dialogue
+                    lines have selected takes.
+                  </p>
+                  <progress
+                    value={
+                      timeline.requiredDialogueIds.length -
+                      timeline.missingDialogueIds.length
+                    }
+                    max={Math.max(1, timeline.requiredDialogueIds.length)}
+                    className="mt-4 h-2 w-full accent-primary"
+                  />
+                </section>
+                <section className="rounded-2xl border border-border bg-card p-6">
+                  <h2 className="font-semibold">Export settings</h2>
+                  <div className="mt-5 flex items-start gap-3 text-sm">
+                    <Switch
+                      checked={options.requireComplete}
+                      onCheckedChange={(checked) =>
+                        setOptions({ ...options, requireComplete: checked })
+                      }
+                      label="Require all assigned lines"
+                    />
+                    <span>
+                      <strong>Require all assigned lines</strong>
+                      <span className="mt-1 block text-muted-foreground">
+                        Prevent export while any enabled role has an incomplete
+                        line.
+                      </span>
+                    </span>
+                  </div>
+                  <div className="mt-5 flex items-start gap-3 text-sm">
+                    <Switch
+                      checked={options.useBackingTrack}
+                      disabled={!pack.backingTrackRef}
+                      onCheckedChange={(checked) =>
+                        setOptions({ ...options, useBackingTrack: checked })
+                      }
+                      label="Use pack backing track"
+                    />
+                    <span>
+                      <strong>Use pack backing track</strong>
+                      <span className="mt-1 block text-muted-foreground">
+                        {pack.backingTrackRef
+                          ? pack.backingTrackRef
+                          : 'This pack has no backing track.'}
+                      </span>
+                    </span>
+                  </div>
+                  <p className="mt-6 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+                    The source video audio is excluded so original dialogue is
+                    not mixed over your takes. Without a usable backing track,
+                    gaps between recordings are silent.
+                  </p>
+                  <Button
+                    className="mt-6"
+                    onClick={() => void startExport()}
+                    disabled={
+                      busy ||
+                      (options.requireComplete &&
+                        timeline.missingDialogueIds.length > 0)
+                    }
+                  >
+                    {busy ? 'Exporting…' : 'Choose file and export MP4'}
+                  </Button>
+                </section>
+                {(busy || result || message) && (
+                  <section
+                    aria-label="Export progress"
+                    className="rounded-2xl border border-border bg-card p-6"
+                  >
+                    <h2 className="font-semibold">Export progress</h2>
+                    <p className="mt-3 text-sm text-muted-foreground">
+                      {message || `${progress}%`}
+                    </p>
+                    <progress
+                      value={progress}
+                      max={100}
+                      className="mt-3 h-2 w-full accent-primary"
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {progress}%
+                    </p>
+                  </section>
+                )}
+                {result && (
+                  <section className="rounded-2xl border border-primary/40 bg-primary/10 p-6">
+                    <div className="flex items-center gap-2 text-primary">
+                      <CheckCircle2 className="size-5" aria-hidden="true" />
+                      <h2 className="font-semibold">Export complete</h2>
+                    </div>
+                    <p className="mt-3 break-all text-sm">
+                      {result.outputPath}
+                    </p>
+                    {result.warnings.map((warning) => (
+                      <p key={warning} className="mt-2 text-sm text-amber-100">
+                        {warning}
+                      </p>
+                    ))}
+                    <Button
+                      className="mt-5"
+                      variant="secondary"
+                      onClick={() => void reveal()}
+                    >
+                      <FolderOpen aria-hidden="true" /> Open output folder
+                    </Button>
+                  </section>
+                )}
+                {!result && project.lastExportPath && (
+                  <Button variant="outline" onClick={() => void reveal()}>
+                    <FolderOpen aria-hidden="true" /> Open last export folder
+                  </Button>
+                )}
+                {error && (
+                  <p
+                    role="alert"
+                    className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
+                  >
+                    {error}
+                  </p>
+                )}
+              </div>
+              <section className="rounded-2xl border border-border bg-card p-6">
+                <h2 className="font-semibold">Missing recordings</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {timeline.missingDialogueIds.length} assigned lines need a
+                  selected take.
+                </p>
+                <div className="mt-5 max-h-[600px] space-y-2 overflow-y-auto">
+                  {timeline.missingDialogueIds.map((id) => {
+                    const dialogue = pack.dialogues.find(
+                      (item) => item.id === id,
+                    )
+                    return (
+                      <Link
+                        key={id}
+                        to={`/workspace/${project.id}`}
+                        className="block rounded-lg bg-secondary p-3 text-sm hover:bg-accent"
+                      >
+                        <span className="text-xs text-primary">
+                          {dialogue?.timestampSeconds.toFixed(2)}s
+                        </span>
+                        <p className="mt-1">
+                          {dialogue?.caption || dialogue?.sourceRef || id}
+                        </p>
+                      </Link>
+                    )
+                  })}
+                  {timeline.missingDialogueIds.length === 0 && (
+                    <p className="text-sm text-primary">
+                      All assigned lines are complete.
+                    </p>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}

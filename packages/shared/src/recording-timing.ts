@@ -1,0 +1,2 @@
+export const RECORDING_LEAD_IN_SECONDS = 1
+export const RECORDING_TAIL_SECONDS = 1
