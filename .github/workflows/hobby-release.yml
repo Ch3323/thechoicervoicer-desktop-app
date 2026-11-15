@@ -1,0 +1,63 @@
+name: Unsigned hobby release
+
+on:
+  push:
+    tags:
+      - 'hobby-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Verify public repository and tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $rootVersion = (Get-Content package.json | ConvertFrom-Json).version
+          if (('hobby-v' + $version) -ne '${{ github.ref_name }}' -or $rootVersion -ne $version) { throw 'Hobby tag must match both package versions' }
+          $repo = gh api "repos/${{ github.repository }}" | ConvertFrom-Json
+          if ($repo.private) { throw 'Unsigned update releases require a public GitHub repository' }
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Check and build
+        run: |
+          bun run typecheck
+          bun run lint
+          bun run test
+          bun run build
+      - name: Build unsigned installer and update metadata
+        working-directory: apps/desktop
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DUB_STUDIO_UNSIGNED_HOBBY: '1'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bunx electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never
+      - name: Verify unsigned release files
+        shell: pwsh
+        run: |
+          $release = 'apps/desktop/release'
+          $installer = Get-ChildItem $release -Filter '*-x64.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Installer missing' }
+          if (-not (Test-Path "$release/latest.yml")) { throw 'latest.yml missing' }
+          if (-not (Test-Path "$($installer.FullName).blockmap")) { throw 'Blockmap missing' }
+          if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'NotSigned') { throw 'Hobby installer must be unsigned' }
+          $updateConfig = Get-Content "$release/win-unpacked/resources/app-update.yml" -Raw
+          if ($updateConfig -match 'publisherName:') { throw 'Unsigned hobby build must not carry a signing identity' }
+          if ($updateConfig -notmatch 'provider: github') { throw 'GitHub update feed missing' }
+      - name: Publish public hobby release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = 'apps/desktop/release'
+          $installer = Get-ChildItem $release -Filter '*-x64.exe' | Select-Object -First 1
+          gh release create '${{ github.ref_name }}' $installer.FullName "$($installer.FullName).blockmap" "$release/latest.yml" --title '${{ github.ref_name }} (unsigned hobby build)' --notes 'Unsigned hobby build. Windows may warn before installation. Automatic updates from this channel do not verify a code-signing certificate.' --verify-tag
