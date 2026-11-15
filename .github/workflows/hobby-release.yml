@@ -3,7 +3,7 @@ name: Unsigned hobby release
 on:
   push:
     tags:
-      - 'hobby-v*'
+      - 'tcvah-v*'
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ jobs:
         run: |
           $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
           $rootVersion = (Get-Content package.json | ConvertFrom-Json).version
-          if (('hobby-v' + $version) -ne '${{ github.ref_name }}' -or $rootVersion -ne $version) { throw 'Hobby tag must match both package versions' }
+          if (('tcvah-v' + $version) -ne '${{ github.ref_name }}' -or $rootVersion -ne $version) { throw 'Hobby tag must match both package versions' }
           $repo = gh api "repos/${{ github.repository }}" | ConvertFrom-Json
           if ($repo.private) { throw 'Unsigned update releases require a public GitHub repository' }
       - name: Install dependencies
