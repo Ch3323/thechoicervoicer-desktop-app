@@ -2,11 +2,10 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, Info, Moon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { useUpdateStatus } from '@/hooks/useUpdateStatus'
+import { UpdateControls } from '@/components/UpdateControls'
 
 export function SettingsPage() {
   const [version, setVersion] = useState<string>('Loading…')
-  const update = useUpdateStatus()
 
   useEffect(() => {
     let active = true
@@ -65,13 +64,10 @@ export function SettingsPage() {
             </div>
             <div className="flex items-center gap-4 p-6">
               <Info className="size-5 text-primary" aria-hidden="true" />
-              <div className="flex-1">
+              <div className="min-w-0 flex-1">
                 <h2 className="font-medium">Updates</h2>
-                <p className="text-sm text-muted-foreground">
-                  {update.message ?? ({ disabled: 'Available in installed Windows releases', idle: 'Ready to check', checking: 'Checking…', available: `Version ${update.version} is available`, downloading: `Downloading… ${update.percent ?? 0}%`, downloaded: `Version ${update.version} is ready to install`, current: 'You are up to date', error: 'Update check failed' }[update.phase])}
-                </p>
+                <UpdateControls />
               </div>
-              <Button size="sm" variant="outline" disabled={update.phase === 'disabled' || update.phase === 'checking' || update.phase === 'downloading'} onClick={() => void window.studio.checkForUpdates()}>Check for updates</Button>
             </div>
           </div>
         </main>

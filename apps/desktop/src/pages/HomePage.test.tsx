@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -14,6 +15,7 @@ import {
   type DubbingProject,
   type RecordingTake,
   type RoomState,
+  type UpdateStatus,
 } from '@studio/shared'
 import { HomePage } from './HomePage'
 
@@ -273,10 +275,22 @@ describe('HomePage', () => {
   })
 
   it('shows settings in the sidebar without replacing the main content', async () => {
+    const checkForUpdates = vi.fn(async () => undefined)
+    const downloadUpdate = vi.fn(async () => undefined)
+    const installUpdate = vi.fn(async () => undefined)
+    let onUpdateStatus: (status: UpdateStatus) => void = () => undefined
     window.studio = {
       listPacks: async () => [],
       listProjects: async () => [],
       getAppVersion: async () => '1.2.3',
+      getUpdateStatus: async () => ({ phase: 'available', version: '1.2.4' }),
+      onUpdateStatus: (callback: (status: UpdateStatus) => void) => {
+        onUpdateStatus = callback
+        return () => undefined
+      },
+      checkForUpdates,
+      downloadUpdate,
+      installUpdate,
     } as unknown as DesktopApi
     showHome()
     fireEvent.click(screen.getByRole('button', { name: 'Settings menu' }))
@@ -288,6 +302,14 @@ describe('HomePage', () => {
     ).toContainElement(screen.getByRole('region', { name: 'Settings panel' }))
     expect(screen.getByText('YOUR SCENE STARTS HERE')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Imported packs' })).toBeNull()
+    expect(screen.getByText('Version 1.2.4 is available.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(checkForUpdates).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Download update' }))
+    expect(downloadUpdate).toHaveBeenCalledOnce()
+    act(() => onUpdateStatus({ phase: 'downloaded', version: '1.2.4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }))
+    expect(installUpdate).toHaveBeenCalledOnce()
   })
 
   it('shows recording artwork and progress from selected takes', async () => {

@@ -24,6 +24,7 @@ import { PackThumbnail } from '@/components/PackThumbnail'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ImportProgressDialog } from '@/components/ImportProgressDialog'
 import { SessionTopBar } from '@/components/SessionTopBar'
+import { UpdateControls } from '@/components/UpdateControls'
 import { WorkspacePage } from '@/pages/WorkspacePage'
 import { RoomPage } from '@/pages/RoomPage'
 
@@ -840,6 +841,13 @@ function HomeSettings() {
             <small>The Choicer Voicer At Home</small>
           </span>
           <b>{version}</b>
+        </div>
+        <div className="!items-start">
+          <Info aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <strong>Updates</strong>
+            <UpdateControls />
+          </div>
         </div>
       </div>
     </section>
