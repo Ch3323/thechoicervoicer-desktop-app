@@ -671,7 +671,10 @@ export async function startRoomServer(options: RoomServerOptions) {
   })
   fastify.get('/media/effect/:dialogueId/:takeId', async (request, reply) => {
     try {
-      authorized(MediaQuery.parse(request.query).token)
+      const query = MediaQuery.extend({
+        revision: z.string().max(1024).optional(),
+      }).parse(request.query)
+      authorized(query.token)
       const { dialogueId, takeId } = z
         .object({
           dialogueId: IdSchema,
@@ -679,7 +682,9 @@ export async function startRoomServer(options: RoomServerOptions) {
         })
         .parse(request.params)
       const project = state.project
-      const effect = project?.voiceEffects?.[dialogueId]
+      const effect = query.revision
+        ? VoiceEffectSchema.parse(JSON.parse(query.revision))
+        : project?.voiceEffects?.[dialogueId]
       if (
         !project ||
         !effect ||

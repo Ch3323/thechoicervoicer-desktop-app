@@ -72,7 +72,10 @@ export function registerMediaProtocol(
       try {
         const path =
           match[1] === 'preview' ? '/media/preview' : `/media/${match[1]}`
-        return await fetch(roomMediaUrl(path), {
+        const remoteUrl = new URL(roomMediaUrl(path))
+        if (match[1].startsWith('effect/') && url.searchParams.has('revision'))
+          remoteUrl.searchParams.set('revision', url.searchParams.get('revision')!)
+        return await fetch(remoteUrl, {
           headers: request.headers.get('range')
             ? { Range: request.headers.get('range')! }
             : {},

@@ -130,13 +130,16 @@ a {
 .session-topbar-modes a:focus-visible,
 .session-topbar-modes button:hover,
 .session-topbar-modes button:focus-visible {
-  border-color: #19d9e8;
-  color: #19d9e8;
+  background: #fff;
 }
 .session-topbar-modes .session-multiplayer {
-  border-color: #087dc2;
-  background: #075e9e;
-  color: #fff;
+  background: #19d9e8;
+  color: #000;
+}
+.session-topbar-modes .session-in-room:hover {
+  border-color: #54c677;
+  background: #10321c;
+  color: #a7f6b8;
 }
 .session-topbar-modes .session-in-room {
   border-color: #54c677;
@@ -151,6 +154,11 @@ a {
 .session-in-room small {
   font-size: 9px;
   color: #d8ffdc;
+}
+.session-topbar-modes .session-leave-room:hover {
+  border-color: #6b3838;
+  background: #281415;
+  color: #ffc1c1;
 }
 .session-topbar-modes .session-leave-room {
   border-color: #6b3838;
@@ -1482,6 +1490,9 @@ a {
 .workspace-embedded {
   background: transparent;
 }
+.room-embedded {
+  background: transparent;
+}
 .workspace-embedded-inner {
   padding-top: 22px;
 }
@@ -2243,33 +2254,12 @@ a {
   font-style: normal;
 }
 .multiplayer-role-progress {
-  display: grid;
-  gap: 4px;
-  margin-top: 5px;
-  color: #b7cbc8;
-  font-size: 10px;
-}
-.multiplayer-role-progress-track {
-  display: block;
-  width: min(100%, 180px);
-  height: 4px;
-  overflow: hidden;
-  border-radius: 4px;
-  background: #36474a;
-}
-.multiplayer-role-progress-track > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #37db92;
-}
-.multiplayer-role-status {
   color: #8da2a1;
   white-space: nowrap;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 900;
 }
-.multiplayer-role-status.ready {
+.multiplayer-role-progress.complete {
   color: #37db92;
 }
 .multiplayer-start {

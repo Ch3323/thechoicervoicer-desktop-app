@@ -38,7 +38,7 @@ export function ImportProgressDialog({ progress }: { progress: Progress }) {
       aria-labelledby="import-progress-title"
       aria-describedby="import-progress-description"
       onCancel={(event) => event.preventDefault()}
-      className="import-progress-dialog rounded-2xl border border-border bg-card p-6 text-foreground"
+      className="import-progress-dialog border border-border bg-card p-6 text-foreground"
     >
       <p className="eyebrow cyan">DUB PACK / IMPORT</p>
       <h2 id="import-progress-title" className="mt-2 text-2xl font-black">

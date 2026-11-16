@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Maximize, Play, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { DubPack, DubbingProject, ExportOptions } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { useBackingTrackPlayback } from '@/hooks/useBackingTrackPlayback'
@@ -10,23 +10,34 @@ export function WatchDubDialog({
   open,
   onClose,
   fastMode,
+  mode = 'single',
+  contentVersion,
+  completedLines,
+  totalLines,
 }: {
   project: DubbingProject
   pack: DubPack
   open: boolean
   onClose: () => void
   fastMode: boolean
+  mode?: 'single' | 'room'
+  contentVersion?: string
+  completedLines?: number
+  totalLines?: number
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const operationRef = useRef(0)
+  const closeRequestedRef = useRef(false)
   const [backingVolume, setBackingVolume] = useState(100)
   const [backingAsset, setBackingAsset] = useState<{
-    packId: string
+    key: string
     ref: string
     url: string
   } | null>(null)
+  const backingKey = mode === 'room' ? project.id : pack.id
   const backingUrl =
-    backingAsset?.packId === pack.id &&
+    backingAsset?.key === backingKey &&
     backingAsset.ref === pack.backingTrackRef
       ? backingAsset.url
       : null
@@ -48,6 +59,29 @@ export function WatchDubDialog({
     backingVolume: backingVolume / 100,
     fastMode,
   }
+  const cancelRender = () =>
+    mode === 'room'
+      ? window.studio.roomCancelRender()
+      : window.studio.cancelExport(project.id)
+  const close = () => {
+    if (closeRequestedRef.current) return
+    closeRequestedRef.current = true
+    operationRef.current += 1
+    void cancelRender()
+    onClose()
+  }
+
+  useEffect(() => {
+    if (open) closeRequestedRef.current = false
+    return () => {
+      if (open && !closeRequestedRef.current) {
+        operationRef.current += 1
+        void cancelRender()
+      }
+    }
+    // Cancellation is tied to this opening, including parent unmounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, project.id])
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -70,14 +104,18 @@ export function WatchDubDialog({
     if (!ref) return
     let active = true
     let objectUrl: string | null = null
-    window.studio.getBackingTrackBytes(pack.id).then(
+    const bytesPromise =
+      mode === 'room'
+        ? window.studio.roomGetBackingTrackBytes()
+        : window.studio.getBackingTrackBytes(pack.id)
+    bytesPromise.then(
       (bytes) => {
         const url = URL.createObjectURL(
           new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' }),
         )
         if (active) {
           objectUrl = url
-          setBackingAsset({ packId: pack.id, ref, url })
+          setBackingAsset({ key: backingKey, ref, url })
         } else URL.revokeObjectURL(url)
       },
       (reason) => {
@@ -89,18 +127,23 @@ export function WatchDubDialog({
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [pack.id, pack.backingTrackRef])
+  }, [backingKey, mode, pack.id, pack.backingTrackRef])
 
   useEffect(() => {
     if (!open) return
-    return window.studio.onExportProgress((update) => {
+    const subscribe =
+      mode === 'room'
+        ? window.studio.onRoomRenderProgress
+        : window.studio.onExportProgress
+    return subscribe((update) => {
       if (update.projectId !== project.id) return
       setProgress(update.percent)
       setMessage(update.message)
     })
-  }, [open, project.id])
+  }, [open, project.id, mode])
 
   async function renderPreview() {
+    const operation = ++operationRef.current
     videoRef.current?.pause()
     backingAudioRef.current?.pause()
     setBusy(true)
@@ -108,47 +151,41 @@ export function WatchDubDialog({
     setProgress(0)
     setMessage('Rendering dub preview…')
     try {
-      setPreviewUrl(
-        await window.studio.renderDubPreview(project.id, {
-          ...options,
-          useBackingTrack: false,
-        }),
-      )
+      const url =
+        mode === 'room'
+          ? await window.studio.roomRenderPreview()
+          : await window.studio.renderDubPreview(project.id, {
+              ...options,
+              useBackingTrack: false,
+            })
+      if (operation === operationRef.current) setPreviewUrl(url)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (operation === operationRef.current)
+        setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
-      setBusy(false)
+      if (operation === operationRef.current) setBusy(false)
     }
   }
 
   async function exportVideo() {
+    const operation = ++operationRef.current
     setBusy(true)
     setError(null)
     try {
-      const result = await window.studio.exportProject(project.id, {
-        ...options,
-        fastMode: false,
-      })
-      if (result) setMessage(`Exported to ${result.outputPath}`)
+      const result =
+        mode === 'room'
+          ? await window.studio.roomExport({ ...options, fastMode: false })
+          : await window.studio.exportProject(project.id, {
+              ...options,
+              fastMode: false,
+            })
+      if (result && operation === operationRef.current)
+        setMessage(`Exported to ${result.outputPath}`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (operation === operationRef.current)
+        setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
-      setBusy(false)
-    }
-  }
-
-  async function fullscreenVideo() {
-    const video = videoRef.current
-    if (!video) return
-    try {
-      await video.requestFullscreen()
-      setError(null)
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? `Could not open the video fullscreen: ${reason.message}`
-          : 'Could not open the video fullscreen.',
-      )
+      if (operation === operationRef.current) setBusy(false)
     }
   }
 
@@ -158,14 +195,14 @@ export function WatchDubDialog({
     return () => window.clearTimeout(timer)
     // Start one render per opening; further changes use the Render again button.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, contentVersion])
 
   return (
     <dialog
       ref={dialogRef}
       aria-label="Watch dub"
-      onClose={onClose}
-      className="watch-dub-dialog rounded-2xl border border-border bg-card p-5 text-foreground"
+      onClose={close}
+      className="watch-dub-dialog border border-border bg-card p-5 text-foreground"
     >
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -177,7 +214,7 @@ export function WatchDubDialog({
         <Button
           variant="outline"
           size="sm"
-          onClick={onClose}
+          onClick={close}
           aria-label="Close watch dub"
         >
           <X aria-hidden="true" />
@@ -244,9 +281,11 @@ export function WatchDubDialog({
       )}
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <p className="mr-auto text-xs text-muted-foreground">
-          {pack.backingTrackRef
-            ? 'Your takes are mixed over the pack backing track.'
-            : 'Your takes are mixed with silent gaps.'}
+          {completedLines !== undefined && totalLines !== undefined
+            ? `${completedLines} of ${totalLines} lines recorded. Missing lines play silently.`
+            : pack.backingTrackRef
+              ? 'Your takes are mixed over the pack backing track.'
+              : 'Your takes are mixed with silent gaps.'}
         </p>
         {pack.backingTrackRef && (
           <label className="flex items-center gap-2 text-xs">
@@ -267,32 +306,10 @@ export function WatchDubDialog({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => {
-            if (videoRef.current) {
-              videoRef.current.currentTime = 0
-              void videoRef.current.play()
-            }
-          }}
-          disabled={!previewUrl}
-        >
-          <Play aria-hidden="true" /> Replay
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void fullscreenVideo()}
-          disabled={busy || !previewUrl}
-          aria-label="Fullscreen video"
-        >
-          <Maximize aria-hidden="true" /> Fullscreen
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
           onClick={() => void renderPreview()}
           disabled={busy}
         >
-          Refresh preview
+          Re-render
         </Button>
         <Button size="sm" onClick={() => void exportVideo()} disabled={busy}>
           Export video

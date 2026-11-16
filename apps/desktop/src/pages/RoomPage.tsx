@@ -8,7 +8,6 @@ import {
   Film,
   Link2,
   ListFilter,
-  Play,
   RefreshCw,
   Users,
   X,
@@ -25,13 +24,12 @@ import {
   type RoomState,
   type DiscoveredRoom,
   type RoomJoinInfo,
-  type ExportProgress,
   type ImportProgress,
   type VoiceEffect,
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { RecordingStudio } from '@/components/RecordingStudio'
-import { useBackingTrackPlayback } from '@/hooks/useBackingTrackPlayback'
+import { WatchDubDialog } from '@/components/WatchDubDialog'
 import { VoiceEffectsPanel } from '@/components/VoiceEffectsPanel'
 import { OverlapWaveform } from '@/components/OverlapWaveform'
 import { PackThumbnail } from '@/components/PackThumbnail'
@@ -41,6 +39,7 @@ import {
   newLiveTakeWaveform,
   type LiveTakeWaveform,
 } from '@/lib/live-waveform'
+import { formatCueTime } from '@/lib/format-cue-time'
 
 type RoomInfo = { state: RoomState; playerId: string; address: string }
 
@@ -72,8 +71,6 @@ export function RoomPage({
   const lobbyDialogRef = useRef<HTMLDialogElement>(null)
   const joinRolesDialogRef = useRef<HTMLDialogElement>(null)
   const rolePickerRef = useRef<HTMLDialogElement>(null)
-  const watchDialogRef = useRef<HTMLDialogElement>(null)
-  const watchVideoRef = useRef<HTMLVideoElement>(null)
   const [internalModalOpen, setInternalModalOpen] = useState(true)
   const roomModalOpen = modalOpen ?? internalModalOpen
   const closeRoomModal = onModalClose ?? (() => setInternalModalOpen(false))
@@ -119,12 +116,6 @@ export function RoomPage({
     Record<string, VoiceEffect>
   >({})
   const effectSaveRef = useRef<Promise<void>>(Promise.resolve())
-  const [backingVolume, setBackingVolume] = useState(100)
-  const [backingAsset, setBackingAsset] = useState<{
-    projectId: string
-    ref: string
-    url: string
-  } | null>(null)
   const [clipPlaying, setClipPlaying] = useState(false)
   const [playbackSeconds, setPlaybackSeconds] = useState(0)
   const [liveTake, setLiveTake] = useState<LiveTakeWaveform | null>(null)
@@ -134,21 +125,6 @@ export function RoomPage({
   const [showRolePicker, setShowRolePicker] = useState(false)
   const canShowRolePicker = showRolePicker && Boolean(info?.state.pack)
   const [watchOpen, setWatchOpen] = useState(false)
-  const watchCloseRequestedRef = useRef(false)
-  const closeWatch = () => {
-    if (watchCloseRequestedRef.current) return
-    watchCloseRequestedRef.current = true
-    void window.studio.roomCancelRender()
-    setWatchOpen(false)
-  }
-  const [watchUrl, setWatchUrl] = useState<{
-    url: string
-    contentVersion: string
-  } | null>(null)
-  const [renderProgress, setRenderProgress] = useState<ExportProgress | null>(
-    null,
-  )
-  const [exportedPath, setExportedPath] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const playheadFrameRef = useRef<number | null>(null)
@@ -230,7 +206,6 @@ export function RoomPage({
     if (roomLoaded) onRoomInfoChange?.(info)
   }, [info, onRoomInfoChange, roomLoaded])
 
-  useEffect(() => window.studio.onRoomRenderProgress?.(setRenderProgress), [])
   useEffect(() => window.studio.onImportProgress?.(setDownloadProgress), [])
 
   const scanRooms = useCallback(async () => {
@@ -279,21 +254,6 @@ export function RoomPage({
   }, [canShowRolePicker])
 
   const state = info?.state
-  const backingProjectId = state?.project?.id
-  const backingRef = state?.pack?.backingTrackRef
-  const backingUrl =
-    backingRef &&
-    backingAsset?.ref === backingRef &&
-    backingAsset.projectId === backingProjectId
-      ? backingAsset.url
-      : null
-  const { backingAudioRef, syncBacking } = useBackingTrackPlayback(
-    backingUrl,
-    backingVolume,
-    watchVideoRef,
-    setError,
-    watchOpen,
-  )
   const isHost = Boolean(state && info?.playerId === state.hostPlayerId)
   const myPlayer = state?.players.find((player) => player.id === info?.playerId)
   const localPackReady = Boolean(
@@ -370,6 +330,9 @@ export function RoomPage({
     if (!state?.started || !previewUrl || selectedCueSeconds === undefined)
       return
     if (videoRef.current) videoRef.current.currentTime = selectedCueSeconds
+    // Keep the displayed cue aligned when the selected dialogue changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPlaybackSeconds(selectedCueSeconds)
   }, [state?.started, previewUrl, selected?.id, selectedCueSeconds])
   const timeline = useMemo(
     () =>
@@ -382,61 +345,6 @@ export function RoomPage({
     takes: state?.takes,
     effects: state?.project?.voiceEffects,
   })
-  const watchVideoUrl =
-    watchUrl?.contentVersion === watchContentVersion ? watchUrl.url : ''
-
-  useEffect(() => {
-    if (!watchOpen || !state?.started) return
-    let active = true
-    void window.studio.roomRenderPreview().then(
-      (url) => {
-        if (active) setWatchUrl({ url, contentVersion: watchContentVersion })
-      },
-      (reason) => {
-        if (active) setError(String(reason))
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [watchOpen, state?.started, state?.project?.id, watchContentVersion])
-
-  useEffect(() => {
-    if (!watchOpen) return
-    const dialog = watchDialogRef.current
-    if (!dialog) return
-    if (typeof dialog.showModal === 'function') dialog.showModal()
-    else dialog.setAttribute('open', '')
-    return () => {
-      dialog.querySelector('video')?.pause()
-      dialog.querySelector('audio')?.pause()
-      if (typeof dialog.close === 'function' && dialog.open) dialog.close()
-    }
-  }, [watchOpen])
-
-  useEffect(() => {
-    if (!backingRef || !backingProjectId || !localPackReady) return
-    let active = true
-    let objectUrl: string | null = null
-    void window.studio.roomGetBackingTrackBytes().then(
-      (bytes) => {
-        const url = URL.createObjectURL(
-          new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' }),
-        )
-        if (active) {
-          objectUrl = url
-          setBackingAsset({ projectId: backingProjectId, ref: backingRef, url })
-        } else URL.revokeObjectURL(url)
-      },
-      (reason) => {
-        if (active) setError(String(reason))
-      },
-    )
-    return () => {
-      active = false
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [backingRef, backingProjectId, localPackReady])
 
   useEffect(() => {
     void window.studio.listPacks().then(
@@ -515,6 +423,7 @@ export function RoomPage({
   }
 
   function changeVoiceEffect(dialogueId: string, effect: VoiceEffect) {
+    if (playbackModeRef.current === 'recording') stopMedia()
     setVoiceEffectOverrides((current) => ({ ...current, [dialogueId]: effect }))
     const pending = effectSaveRef.current.then(() =>
       window.studio.roomSetVoiceEffect(dialogueId, effect),
@@ -672,10 +581,8 @@ export function RoomPage({
 
   async function copyRoom(kind: 'code' | 'invite') {
     if (!info) return
-    const value =
-      kind === 'code' ? info.state.code : `${info.address} ${info.state.code}`
     try {
-      await navigator.clipboard.writeText(value)
+      await window.studio.copyRoomDetails(kind)
       setCopied(kind)
     } catch {
       setError(
@@ -695,7 +602,6 @@ export function RoomPage({
   }
   async function openWatch() {
     await effectSaveRef.current
-    watchCloseRequestedRef.current = false
     setWatchOpen(true)
   }
   const stopMedia = useCallback(() => {
@@ -1299,44 +1205,12 @@ export function RoomPage({
                           </strong>
                           <small>{clips} CLIPS</small>
                           {owner && <em>{owner.displayName}</em>}
-                          {state.started && owner && (
-                            <span className="multiplayer-role-progress">
-                              <span>
-                                {recorded} / {clips} lines recorded
-                              </span>
-                              <span
-                                className="multiplayer-role-progress-track"
-                                role="progressbar"
-                                aria-label={`${owner.displayName} progress for ${character.name}`}
-                                aria-valuemin={0}
-                                aria-valuemax={clips}
-                                aria-valuenow={recorded}
-                              >
-                                <span
-                                  style={{
-                                    width: `${clips ? (recorded / clips) * 100 : 0}%`,
-                                  }}
-                                />
-                              </span>
-                            </span>
-                          )}
                         </span>
                         <span
-                          className={`multiplayer-role-status ${owner && (state.started ? owner.connected && recorded === clips : state.readyPlayerIds.includes(owner.id)) ? 'ready' : ''}`}
+                          className={`multiplayer-role-progress ${recorded === clips ? 'complete' : ''}`}
+                          aria-label={`${character.name}: ${recorded} of ${clips} lines recorded`}
                         >
-                          {owner
-                            ? !owner.connected
-                              ? 'DISCONNECTED'
-                              : state.started
-                                ? recorded === clips
-                                  ? 'COMPLETE'
-                                  : 'PLAYING'
-                                : state.readyPlayerIds.includes(owner.id)
-                                  ? 'READY'
-                                  : owner.packReady === false
-                                    ? 'PACK NEEDED'
-                                    : 'NOT READY'
-                            : 'WAITING'}
+                          {recorded}/{clips}
                         </span>
                       </div>
                     )
@@ -1682,7 +1556,7 @@ export function RoomPage({
                                   <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
                                   Cue{' '}
                                   <span className="text-amber-300">
-                                    {selected.timestampSeconds.toFixed(2)}s
+                                    {formatCueTime(playbackSeconds)}
                                   </span>
                                 </div>
                                 <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/75 to-transparent px-5 pb-6 pt-16 text-center">
@@ -1786,7 +1660,6 @@ export function RoomPage({
                                 )
                             }}
                             onRecordingProgress={(relativeSeconds) =>
-                              !playbackModeRef.current &&
                               setPlaybackSeconds(
                                 selected.timestampSeconds + relativeSeconds,
                               )
@@ -1859,176 +1732,23 @@ export function RoomPage({
                     </div>
                   </>
                 )}
-                {watchOpen && (
-                  <dialog
-                    ref={watchDialogRef}
-                    aria-label="Watch dub"
-                    onClose={closeWatch}
-                    className="watch-dub-dialog rounded-2xl border border-border bg-card p-5 text-foreground"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-xs font-bold uppercase text-primary">
-                          Final cut
-                        </p>
-                        <h2 className="mt-1 text-xl font-black uppercase">
-                          {state.pack.metadata.title}
-                        </h2>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={closeWatch}
-                        aria-label="Close watch dub"
-                      >
-                        <X aria-hidden="true" />
-                      </Button>
-                    </div>
-                    <div className="mt-5 aspect-video overflow-hidden rounded bg-black">
-                      {watchVideoUrl ? (
-                        <video
-                          ref={watchVideoRef}
-                          className="h-full w-full object-contain"
-                          controls
-                          playsInline
-                          src={watchVideoUrl}
-                          onPlaying={(event) =>
-                            syncBacking(event.currentTarget)
-                          }
-                          onWaiting={() => backingAudioRef.current?.pause()}
-                          onPause={() => backingAudioRef.current?.pause()}
-                          onEnded={() => backingAudioRef.current?.pause()}
-                          onSeeking={(event) => {
-                            if (backingAudioRef.current)
-                              backingAudioRef.current.currentTime =
-                                event.currentTarget.currentTime
-                          }}
-                          onRateChange={(event) => {
-                            if (backingAudioRef.current)
-                              backingAudioRef.current.playbackRate =
-                                event.currentTarget.playbackRate
-                          }}
-                          onTimeUpdate={(event) => {
-                            const backing = backingAudioRef.current
-                            if (
-                              backing &&
-                              Math.abs(
-                                backing.currentTime -
-                                  event.currentTarget.currentTime,
-                              ) > 0.2
-                            )
-                              backing.currentTime =
-                                event.currentTarget.currentTime
-                          }}
-                        />
-                      ) : (
-                        <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-                          <p>
-                            {renderProgress
-                              ? `${renderProgress.message} ${renderProgress.percent}%`
-                              : 'Preparing local preview…'}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                    {backingUrl && (
-                      <audio
-                        key={backingUrl}
-                        ref={backingAudioRef}
-                        src={backingUrl}
-                        preload="auto"
-                      />
-                    )}
-                    {renderProgress && !watchVideoUrl && (
-                      <progress
-                        value={renderProgress.percent}
-                        max={100}
-                        className="dub-render-progress mt-3 block h-1.5 w-full overflow-hidden rounded accent-primary"
-                      />
-                    )}
-                    {error && (
-                      <p role="alert" className="mt-3 text-sm text-red-300">
-                        {error}
-                      </p>
-                    )}
-                    <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <p className="mr-auto text-xs text-muted-foreground">
-                        {timeline
-                          ? `${timeline.requiredDialogueIds.length - timeline.missingDialogueIds.length} of ${timeline.requiredDialogueIds.length} lines recorded. Missing lines play silently.`
-                          : 'Available takes play over the source video.'}
-                      </p>
-                      {backingUrl && (
-                        <label className="flex items-center gap-2 text-xs">
-                          Backing track{' '}
-                          <input
-                            aria-label="Backing track volume"
-                            type="range"
-                            min="0"
-                            max="200"
-                            step="5"
-                            value={backingVolume}
-                            onChange={(event) =>
-                              setBackingVolume(Number(event.target.value))
-                            }
-                            className="w-28 accent-primary"
-                          />{' '}
-                          {backingVolume}%
-                        </label>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!watchVideoUrl}
-                        onClick={() => {
-                          if (watchVideoRef.current) {
-                            watchVideoRef.current.currentTime = 0
-                            void watchVideoRef.current.play()
-                          }
-                        }}
-                      >
-                        <Play aria-hidden="true" /> Replay
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={busy}
-                        onClick={() =>
-                          void run(async () => {
-                            const url = await window.studio.roomRenderPreview()
-                            setWatchUrl({
-                              url,
-                              contentVersion: watchContentVersion,
-                            })
-                          })
-                        }
-                      >
-                        Refresh preview
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={busy || !watchVideoUrl}
-                        onClick={() =>
-                          void run(async () => {
-                            const result = await window.studio.roomExport({
-                              useBackingTrack: Boolean(
-                                state.pack?.backingTrackRef,
-                              ),
-                              requireComplete: false,
-                              backingVolume: backingVolume / 100,
-                            })
-                            if (result) setExportedPath(result.outputPath)
-                          })
-                        }
-                      >
-                        Export video
-                      </Button>
-                    </div>
-                    {exportedPath && (
-                      <p className="mt-3 text-xs text-muted-foreground">
-                        Saved to {exportedPath}
-                      </p>
-                    )}
-                  </dialog>
+                {state.project && (
+                  <WatchDubDialog
+                    project={state.project}
+                    pack={state.pack}
+                    open={watchOpen}
+                    onClose={() => setWatchOpen(false)}
+                    fastMode={false}
+                    mode="room"
+                    contentVersion={watchContentVersion}
+                    completedLines={
+                      timeline
+                        ? timeline.requiredDialogueIds.length -
+                          timeline.missingDialogueIds.length
+                        : 0
+                    }
+                    totalLines={timeline?.requiredDialogueIds.length ?? 0}
+                  />
                 )}
               </>
             )}

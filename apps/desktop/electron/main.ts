@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from 'electron'
 import { basename, join } from 'node:path'
 import { networkInterfaces } from 'node:os'
 import { mkdir, rm, stat, writeFile, rename } from 'node:fs/promises'
@@ -35,7 +35,11 @@ let mainWindow: BrowserWindow | null = null
 let activeWrites = 0
 async function duringWrite<T>(operation: () => Promise<T>): Promise<T> {
   activeWrites++
-  try { return await operation() } finally { activeWrites-- }
+  try {
+    return await operation()
+  } finally {
+    activeWrites--
+  }
 }
 
 function createMainWindow(): void {
@@ -114,6 +118,17 @@ if (!gotSingleInstanceLock) {
     let roomPackId: string | null = null
     let roomRenderQueue: Promise<unknown> = Promise.resolve()
     const roomRenderControllers = new Set<AbortController>()
+    const exportControllers = new Map<string, Set<AbortController>>()
+    const trackExport = (projectId: string, controller: AbortController) => {
+      const controllers =
+        exportControllers.get(projectId) ?? new Set<AbortController>()
+      controllers.add(controller)
+      exportControllers.set(projectId, controllers)
+      return () => {
+        controllers.delete(controller)
+        if (controllers.size === 0) exportControllers.delete(projectId)
+      }
+    }
     const roomStateChanged = (
       state: import('@studio/shared').RoomState | null,
     ) => {
@@ -191,7 +206,15 @@ if (!gotSingleInstanceLock) {
     }
     session.defaultSession.setPermissionRequestHandler(
       (webContents, permission, callback, details) => {
-        if (webContents !== mainWindow?.webContents || permission !== 'media') {
+        if (webContents !== mainWindow?.webContents) {
+          callback(false)
+          return
+        }
+        if (permission === 'fullscreen') {
+          callback(true)
+          return
+        }
+        if (permission !== 'media') {
           callback(false)
           return
         }
@@ -203,8 +226,8 @@ if (!gotSingleInstanceLock) {
     session.defaultSession.setPermissionCheckHandler(
       (webContents, permission, _origin, details) =>
         webContents === mainWindow?.webContents &&
-        permission === 'media' &&
-        details.mediaType !== 'video',
+        (permission === 'fullscreen' ||
+          (permission === 'media' && details.mediaType !== 'video')),
     )
     const fromMainWindow = (event: Electron.IpcMainInvokeEvent) => {
       if (event.sender !== mainWindow?.webContents)
@@ -399,6 +422,17 @@ if (!gotSingleInstanceLock) {
       fromMainWindow(event)
       return roomClient?.getInfo() ?? null
     })
+    ipcMain.handle('room:copy-details', (event, kind: unknown) => {
+      fromMainWindow(event)
+      const detailKind = z.enum(['code', 'invite']).parse(kind)
+      const info = roomClient?.getInfo()
+      if (!info) throw new Error('Room is unavailable')
+      clipboard.writeText(
+        detailKind === 'code'
+          ? info.state.code
+          : `${info.address} ${info.state.code}`,
+      )
+    })
     ipcMain.handle('room:pack', async (event, packId: unknown) => {
       fromMainWindow(event)
       const pack = await store.getPack(
@@ -540,18 +574,20 @@ if (!gotSingleInstanceLock) {
           const { projectId } = await syncRoomSnapshot()
           controller.signal.throwIfAborted()
           await mkdir(roomCachePreviews, { recursive: true })
-          await duringWrite(() => exportProject(
-            roomCacheStore,
-            packStorage,
-            roomCacheRecordings,
-            projectId,
-            { useBackingTrack: false, requireComplete: false },
-            join(roomCachePreviews, `${projectId}.mp4`),
-            (progress) =>
-              mainWindow?.webContents.send('room:render-progress', progress),
-            false,
-            controller.signal,
-          ))
+          await duringWrite(() =>
+            exportProject(
+              roomCacheStore,
+              packStorage,
+              roomCacheRecordings,
+              projectId,
+              { useBackingTrack: false, requireComplete: false },
+              join(roomCachePreviews, `${projectId}.mp4`),
+              (progress) =>
+                mainWindow?.webContents.send('room:render-progress', progress),
+              false,
+              controller.signal,
+            ),
+          )
           return `studio-media://room-local/${projectId}.mp4?revision=${Date.now()}`
         })
       roomRenderQueue = render
@@ -625,18 +661,20 @@ if (!gotSingleInstanceLock) {
         const outputPath = /\.mp4$/i.test(selection.filePath)
           ? selection.filePath
           : `${selection.filePath}.mp4`
-        return await duringWrite(() => exportProject(
-          roomCacheStore,
-          packStorage,
-          roomCacheRecordings,
-          projectId,
-          options,
-          outputPath,
-          (progress) =>
-            mainWindow?.webContents.send('room:render-progress', progress),
-          false,
-          controller.signal,
-        ))
+        return await duringWrite(() =>
+          exportProject(
+            roomCacheStore,
+            packStorage,
+            roomCacheRecordings,
+            projectId,
+            options,
+            outputPath,
+            (progress) =>
+              mainWindow?.webContents.send('room:render-progress', progress),
+            false,
+            controller.signal,
+          ),
+        )
       } finally {
         roomRenderControllers.delete(controller)
       }
@@ -812,7 +850,9 @@ if (!gotSingleInstanceLock) {
           bytes: z.instanceof(Uint8Array),
         })
         .parse(input)
-      return duringWrite(() => saveRecording(recordingStorage, store, validated))
+      return duringWrite(() =>
+        saveRecording(recordingStorage, store, validated),
+      )
     })
     ipcMain.handle(
       'recordings:select',
@@ -889,31 +929,42 @@ if (!gotSingleInstanceLock) {
             fastMode: z.boolean().optional(),
           })
           .parse(rawOptions)
-        const project = await store.getProject(id)
-        const pack = project && (await store.getPack(project.packId))
-        if (!project || !pack)
-          throw new Error('Project Dub Pack is unavailable')
-        const defaultName = `${pack.metadata.title.replace(/[<>:"/\\|?*]/g, '_').replace(/\p{Cc}/gu, '_') || 'dubbed-video'}.mp4`
-        const dialogResult = await dialog.showSaveDialog(mainWindow!, {
-          title: 'Export dubbed video',
-          defaultPath: basename(defaultName),
-          filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
-        })
-        if (dialogResult.canceled || !dialogResult.filePath) return null
-        const outputPath = /\.mp4$/i.test(dialogResult.filePath)
-          ? dialogResult.filePath
-          : `${dialogResult.filePath}.mp4`
-        return duringWrite(() => exportProject(
-          store,
-          packStorage,
-          recordingStorage,
-          id,
-          options,
-          outputPath,
-          (progress) => {
-            mainWindow?.webContents.send('export:progress', progress)
-          },
-        ))
+        const controller = new AbortController()
+        const untrack = trackExport(id, controller)
+        try {
+          const project = await store.getProject(id)
+          const pack = project && (await store.getPack(project.packId))
+          if (!project || !pack)
+            throw new Error('Project Dub Pack is unavailable')
+          const defaultName = `${pack.metadata.title.replace(/[<>:"/\\|?*]/g, '_').replace(/\p{Cc}/gu, '_') || 'dubbed-video'}.mp4`
+          const dialogResult = await dialog.showSaveDialog(mainWindow!, {
+            title: 'Export dubbed video',
+            defaultPath: basename(defaultName),
+            filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+          })
+          controller.signal.throwIfAborted()
+          if (dialogResult.canceled || !dialogResult.filePath) return null
+          const outputPath = /\.mp4$/i.test(dialogResult.filePath)
+            ? dialogResult.filePath
+            : `${dialogResult.filePath}.mp4`
+          return duringWrite(() =>
+            exportProject(
+              store,
+              packStorage,
+              recordingStorage,
+              id,
+              options,
+              outputPath,
+              (progress) => {
+                mainWindow?.webContents.send('export:progress', progress)
+              },
+              true,
+              controller.signal,
+            ),
+          )
+        } finally {
+          untrack()
+        }
       },
     )
     ipcMain.handle(
@@ -929,21 +980,36 @@ if (!gotSingleInstanceLock) {
             fastMode: z.boolean().optional(),
           })
           .parse(rawOptions)
-        await mkdir(dubPreviewStorage, { recursive: true })
-        await duringWrite(() => exportProject(
-          store,
-          packStorage,
-          recordingStorage,
-          id,
-          options,
-          join(dubPreviewStorage, `${id}.mp4`),
-          (progress) =>
-            mainWindow?.webContents.send('export:progress', progress),
-          false,
-        ))
-        return `studio-media://dub/${id}.mp4?revision=${Date.now()}`
+        const controller = new AbortController()
+        const untrack = trackExport(id, controller)
+        try {
+          await mkdir(dubPreviewStorage, { recursive: true })
+          await duringWrite(() =>
+            exportProject(
+              store,
+              packStorage,
+              recordingStorage,
+              id,
+              options,
+              join(dubPreviewStorage, `${id}.mp4`),
+              (progress) =>
+                mainWindow?.webContents.send('export:progress', progress),
+              false,
+              controller.signal,
+            ),
+          )
+          return `studio-media://dub/${id}.mp4?revision=${Date.now()}`
+        } finally {
+          untrack()
+        }
       },
     )
+    ipcMain.handle('export:cancel', (event, projectId: unknown) => {
+      fromMainWindow(event)
+      const id = z.uuid().parse(projectId)
+      for (const controller of exportControllers.get(id) ?? [])
+        controller.abort()
+    })
     ipcMain.handle('export:reveal', async (event, projectId: unknown) => {
       fromMainWindow(event)
       const project = await store.getProject(z.uuid().parse(projectId))
@@ -952,7 +1018,10 @@ if (!gotSingleInstanceLock) {
       shell.showItemInFolder(project.lastExportPath)
     })
 
-    registerUpdates(() => mainWindow, () => activeWrites > 0)
+    registerUpdates(
+      () => mainWindow,
+      () => activeWrites > 0,
+    )
     createMainWindow()
 
     app.on('activate', () => {

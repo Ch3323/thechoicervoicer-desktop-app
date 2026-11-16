@@ -488,6 +488,27 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
   expect(effected.status).toBe(200)
   expect(effected.headers.get('content-type')).toContain('audio/mp4')
   expect((await effected.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  const originalPreview = new URL(
+    alice.client.mediaUrl(
+      `/media/effect/${encodeURIComponent(aliceLine.id)}/${first.id}`,
+    ),
+  )
+  originalPreview.searchParams.set(
+    'revision',
+    JSON.stringify({
+      preset: 'original',
+      pitch: 0,
+      tone: 0,
+      texture: 0,
+      space: 0,
+      echo: 0,
+      mod: 0,
+    }),
+  )
+  const original = await fetch(originalPreview)
+  expect(original.status).toBe(200)
+  expect(original.headers.get('content-type')).toContain('audio/wav')
+  expect((await original.arrayBuffer()).byteLength).toBe(aliceBytes.byteLength)
   await eventually(() => host.client.getInfo()?.state.takes.length === 2)
   const waveform = await bob.client.request<{
     original: number[]

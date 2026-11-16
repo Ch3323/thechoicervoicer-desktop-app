@@ -4,14 +4,18 @@ import type { DesktopApi } from '@studio/shared'
 const api: DesktopApi = {
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   onUpdateStatus: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status)
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      status: Parameters<typeof callback>[0],
+    ) => callback(status)
     ipcRenderer.on('updates:status', listener)
     return () => ipcRenderer.removeListener('updates:status', listener)
   },
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
   installUpdate: () => ipcRenderer.invoke('updates:install'),
-  setRecordingActivity: (active) => ipcRenderer.invoke('updates:recording-activity', active),
+  setRecordingActivity: (active) =>
+    ipcRenderer.invoke('updates:recording-activity', active),
   createRoom: (displayName, port) =>
     ipcRenderer.invoke('room:create', displayName, port),
   joinRoom: (address, code, displayName, packId, roleIds) =>
@@ -29,6 +33,7 @@ const api: DesktopApi = {
     ipcRenderer.invoke('room:prepare-pack', address, code),
   discoverRooms: () => ipcRenderer.invoke('room:discover'),
   getRoom: () => ipcRenderer.invoke('room:get'),
+  copyRoomDetails: (kind) => ipcRenderer.invoke('room:copy-details', kind),
   onRoomState: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
@@ -115,6 +120,7 @@ const api: DesktopApi = {
     ipcRenderer.invoke('export:start', projectId, options),
   renderDubPreview: (projectId, options) =>
     ipcRenderer.invoke('export:preview', projectId, options),
+  cancelExport: (projectId) => ipcRenderer.invoke('export:cancel', projectId),
   onExportProgress: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

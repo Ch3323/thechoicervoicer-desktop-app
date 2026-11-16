@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,6 +11,7 @@ import {
   parseDubPack,
   type DesktopApi,
   type DubbingProject,
+  type ExportResult,
 } from '@studio/shared'
 import { WatchDubDialog } from './WatchDubDialog'
 
@@ -45,6 +47,7 @@ describe('watch dub', () => {
     const packWithBacking = { ...pack, backingTrackRef: '_backing_track.ogg' }
     const renderDubPreview = vi.fn(async () => 'studio-media://dub/preview.mp4')
     const exportProject = vi.fn(async () => null)
+    const cancelExport = vi.fn(async () => undefined)
     const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }
     class FakeAudioContext {
       destination = {}
@@ -69,6 +72,7 @@ describe('watch dub', () => {
     window.studio = {
       renderDubPreview,
       exportProject,
+      cancelExport,
       getBackingTrackBytes: async () => new Uint8Array([1, 2, 3]),
       onExportProgress: () => () => undefined,
     } as unknown as DesktopApi
@@ -131,10 +135,15 @@ describe('watch dub', () => {
 
   it('renders the current mix in a modal and offers export there', async () => {
     const renderDubPreview = vi.fn(async () => 'studio-media://dub/preview.mp4')
-    const exportProject = vi.fn(async () => null)
+    let finishExport!: (result: ExportResult | null) => void
+    const exportProject = vi.fn(
+      () => new Promise<ExportResult | null>((resolve) => (finishExport = resolve)),
+    )
+    const cancelExport = vi.fn(async () => undefined)
     window.studio = {
       renderDubPreview,
       exportProject,
+      cancelExport,
       onExportProgress: () => () => undefined,
     } as unknown as DesktopApi
     const onClose = vi.fn()
@@ -158,17 +167,44 @@ describe('watch dub', () => {
     await waitFor(() =>
       expect(container.querySelector('video[controls]')).not.toBeNull(),
     )
-    const video = container.querySelector('video')!
-    const requestFullscreen = vi.fn(async () => undefined)
-    Object.defineProperty(video, 'requestFullscreen', {
-      configurable: true,
-      value: requestFullscreen,
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen video' }))
-    expect(requestFullscreen).toHaveBeenCalledOnce()
+    expect(
+      screen.queryByRole('button', { name: 'Fullscreen video' }),
+    ).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Replay' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Export video' }))
     await waitFor(() => expect(exportProject).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByRole('button', { name: 'Close watch dub' }))
     expect(onClose).toHaveBeenCalledOnce()
+    expect(cancelExport).toHaveBeenCalledWith(project.id)
+    await act(async () =>
+      finishExport({
+        outputPath: 'C:/done.mp4',
+        backingTrackUsed: false,
+        warnings: [],
+      }),
+    )
+    expect(screen.queryByText('Exported to C:/done.mp4')).toBeNull()
+  })
+
+  it('cancels a preview that is still rendering when closed', async () => {
+    const renderDubPreview = vi.fn(() => new Promise<string>(() => undefined))
+    const cancelExport = vi.fn(async () => undefined)
+    window.studio = {
+      renderDubPreview,
+      cancelExport,
+      onExportProgress: () => () => undefined,
+    } as unknown as DesktopApi
+    render(
+      <WatchDubDialog
+        project={project}
+        pack={pack}
+        open
+        onClose={vi.fn()}
+        fastMode={false}
+      />,
+    )
+    await waitFor(() => expect(renderDubPreview).toHaveBeenCalledOnce())
+    fireEvent.click(screen.getByRole('button', { name: 'Close watch dub' }))
+    expect(cancelExport).toHaveBeenCalledWith(project.id)
   })
 })

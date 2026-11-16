@@ -82,6 +82,10 @@ describe('workspace clip preview', () => {
     Object.defineProperty(audio, 'duration', { configurable: true, value: 1.5 })
     fireEvent.loadedMetadata(video)
     fireEvent.loadedMetadata(audio)
+    expect(screen.getByLabelText('Video player')).toHaveTextContent('Cue 00:08')
+    video.currentTime = 9.32
+    fireEvent.timeUpdate(video)
+    expect(screen.getByLabelText('Video player')).toHaveTextContent('Cue 00:09')
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Hear clip' })).toBeEnabled(),
     )

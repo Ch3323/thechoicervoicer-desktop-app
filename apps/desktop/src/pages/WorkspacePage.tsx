@@ -25,12 +25,7 @@ import {
   newLiveTakeWaveform,
   type LiveTakeWaveform,
 } from '@/lib/live-waveform'
-
-function formatTime(seconds: number): string {
-  const minutes = Math.floor(seconds / 60)
-  const remaining = (seconds % 60).toFixed(2).padStart(5, '0')
-  return `${minutes}:${remaining}`
-}
+import { formatCueTime } from '@/lib/format-cue-time'
 
 const originalVoiceEffect: VoiceEffect = {
   preset: 'original',
@@ -531,6 +526,13 @@ export function WorkspacePage({
     } else if (video.currentTime < range.startSeconds) {
       video.currentTime = range.startSeconds
     }
+    if (previewModeRef.current === null)
+      setPlaybackSeconds(
+        Math.max(
+          range.startSeconds,
+          Math.min(video.currentTime, range.endSeconds),
+        ),
+      )
   }
 
   async function toggleRole(id: string) {
@@ -730,7 +732,7 @@ export function WorkspacePage({
                         <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
                         Cue{' '}
                         <span className="ml-2 text-amber-300">
-                          {formatTime(selected.timestampSeconds)}
+                          {formatCueTime(playbackSeconds)}
                         </span>
                       </div>
                     )}

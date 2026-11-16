@@ -60,4 +60,4 @@ jobs:
         run: |
           $release = 'apps/desktop/release'
           $installer = Get-ChildItem $release -Filter '*-x64.exe' | Select-Object -First 1
-          gh release create '${{ github.ref_name }}' $installer.FullName "$($installer.FullName).blockmap" "$release/latest.yml" --title '${{ github.ref_name }} (unsigned hobby build)' --notes 'Unsigned hobby build. Windows may warn before installation. Automatic updates from this channel do not verify a code-signing certificate.' --verify-tag
+          gh release create '${{ github.ref_name }}' $installer.FullName "$($installer.FullName).blockmap" "$release/latest.yml" --title '${{ github.ref_name }}' --notes 'Unsigned hobby build. Windows may warn before installation. Automatic updates from this channel do not verify a code-signing certificate.' --verify-tag

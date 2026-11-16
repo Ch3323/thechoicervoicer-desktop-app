@@ -385,6 +385,7 @@ describe('RoomPage setup', () => {
 
   it('creates a room from a pack without an existing recording project', async () => {
     const steps: string[] = []
+    const copyRoomDetails = vi.fn(async () => undefined)
     let onRoomState: ((state: RoomState | null) => void) | undefined
     const state: RoomState = {
       code: 'ABC234',
@@ -415,6 +416,7 @@ describe('RoomPage setup', () => {
         steps.push('create')
         return room
       },
+      copyRoomDetails,
       roomSetPack: async (packId: string) => {
         expect(packId).toBe(pack.id)
         steps.push('pack')
@@ -474,6 +476,11 @@ describe('RoomPage setup', () => {
     expect(
       screen.getByRole('dialog', { name: 'Room lobby' }),
     ).toHaveTextContent('ABC234')
+    fireEvent.click(screen.getByRole('button', { name: 'COPY CODE' }))
+    await waitFor(() => expect(copyRoomDetails).toHaveBeenCalledWith('code'))
+    expect(screen.getByRole('button', { name: 'COPIED' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'COPY INVITE DETAILS' }))
+    await waitFor(() => expect(copyRoomDetails).toHaveBeenCalledWith('invite'))
     expect(screen.getByRole('button', { name: 'READY TO PLAY' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'READY TO PLAY' }))
     expect(
@@ -560,11 +567,12 @@ it('updates role recording progress in the room modal during play', async () => 
   )
   fireEvent.click(await screen.findByRole('button', { name: /IN ROOM/ }))
   const lobby = screen.getByRole('dialog', { name: 'Room lobby' })
-  const progress = within(lobby).getByRole('progressbar', {
-    name: /Host progress/,
-  })
-  expect(progress).toHaveAttribute('aria-valuenow', '0')
-  expect(lobby).toHaveTextContent('PLAYING')
+  const incomplete = within(lobby).getByLabelText(
+    `${pack.characters[0].name}: 0 of 1 lines recorded`,
+  )
+  expect(incomplete).toHaveTextContent('0/1')
+  expect(incomplete).not.toHaveClass('complete')
+  expect(within(lobby).queryByRole('progressbar')).not.toBeInTheDocument()
 
   const take: RecordingTake = {
     id: '00000000-0000-4000-8000-000000000011',
@@ -578,9 +586,11 @@ it('updates role recording progress in the room modal during play', async () => 
     selected: true,
   }
   act(() => onRoomState?.({ ...state, takes: [take] }))
-  expect(progress).toHaveAttribute('aria-valuenow', '1')
-  expect(lobby).toHaveTextContent('1 / 1 lines recorded')
-  expect(lobby).toHaveTextContent('COMPLETE')
+  const complete = within(lobby).getByLabelText(
+    `${pack.characters[0].name}: 1 of 1 lines recorded`,
+  )
+  expect(complete).toHaveTextContent('1/1')
+  expect(complete).toHaveClass('complete')
 })
 
 it('opens a joined session on the player’s first assigned line', async () => {
@@ -676,6 +686,11 @@ it('opens a joined session on the player’s first assigned line', async () => {
   await waitFor(() =>
     expect(container.querySelector('video')?.currentTime).toBe(8),
   )
+  expect(screen.getByLabelText('Video player')).toHaveTextContent('Cue 00:08')
+  const video = container.querySelector('video')!
+  video.currentTime = 9.5
+  fireEvent.timeUpdate(video)
+  expect(screen.getByLabelText('Video player')).toHaveTextContent('Cue 00:09')
   expect(screen.getByRole('button', { name: /My first line/ })).toHaveClass(
     'border-primary',
   )
@@ -875,6 +890,7 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
     roomGetTakeUrl: async (takeId: string) =>
       `studio-media://room/take/${takeId}`,
     roomRenderPreview,
+    onRoomRenderProgress: () => () => undefined,
     roomCancelRender,
     roomExport,
     roomGetExportUrl: async () => 'studio-media://room/export',
@@ -888,9 +904,9 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   const button = await screen.findByRole('button', { name: 'Watch dub' })
   expect(button).not.toHaveClass('watch-ready')
   fireEvent.click(button)
-  expect(await screen.findByRole('dialog', { name: 'Watch dub' })).toHaveTextContent(
-    '0 of 2 lines recorded. Missing lines play silently.',
-  )
+  expect(
+    await screen.findByRole('dialog', { name: 'Watch dub' }),
+  ).toHaveTextContent('0 of 2 lines recorded. Missing lines play silently.')
   expect(
     screen.queryByLabelText('Use backing track in export'),
   ).not.toBeInTheDocument()
@@ -934,11 +950,13 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   fireEvent.click(button)
   const dialog = await screen.findByRole('dialog', { name: 'Watch dub' })
   expect(dialog).toHaveClass('watch-dub-dialog')
-  expect(screen.getByRole('button', { name: 'Replay' })).toBeInTheDocument()
   expect(
-    screen.getByRole('button', { name: 'Refresh preview' }),
+    screen.queryByRole('button', { name: 'Replay' }),
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Re-render' })).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Export video' }),
   ).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Export video' })).toBeInTheDocument()
   await waitFor(() =>
     expect(dialog.querySelector('video')).toHaveAttribute(
       'src',
@@ -951,7 +969,6 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   video.currentTime = 2.5
   fireEvent.playing(video)
   await waitFor(() => expect(audio.currentTime).toBe(2.5))
-  expect(screen.getByRole('button', { name: 'Replay' })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Export video' })).toBeEnabled()
   fireEvent.click(screen.getByRole('button', { name: 'Export video' }))
   await waitFor(() =>
@@ -959,6 +976,7 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
       useBackingTrack: true,
       requireComplete: false,
       backingVolume: 1.5,
+      fastMode: false,
     }),
   )
 })
@@ -1057,7 +1075,10 @@ it('keeps room clip and recording playback exclusive', async () => {
     .spyOn(HTMLMediaElement.prototype, 'pause')
     .mockImplementation(() => undefined)
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
-  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+  vi.stubGlobal(
+    'requestAnimationFrame',
+    vi.fn(() => 1),
+  )
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   const take: RecordingTake = {
     id: '00000000-0000-4000-8000-000000000011',
@@ -1128,6 +1149,11 @@ it('keeps room clip and recording playback exclusive', async () => {
   const recordingAudio = container.querySelector<HTMLAudioElement>(
     'audio[src="studio-media://room/take"]',
   )!
+  const pointer = container.querySelector('path[stroke="#b8ffea"]')!
+  const startPosition = pointer.getAttribute('d')
+  recordingAudio.currentTime = 0.5
+  fireEvent.timeUpdate(recordingAudio)
+  expect(pointer.getAttribute('d')).not.toBe(startPosition)
   pause.mockClear()
   fireEvent.click(screen.getByRole('button', { name: 'Hear clip' }))
   expect(pause.mock.instances).toContain(recordingAudio)

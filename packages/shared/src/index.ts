@@ -27,7 +27,15 @@ export interface ImportProgress {
 }
 
 export interface UpdateStatus {
-  phase: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'current' | 'error'
+  phase:
+    | 'disabled'
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'current'
+    | 'error'
   version?: string
   percent?: number
   message?: string
@@ -64,6 +72,7 @@ export interface DesktopApi {
     playerId: string
     address: string
   } | null>
+  copyRoomDetails(kind: 'code' | 'invite'): Promise<void>
   onRoomState(callback: (state: RoomState | null) => void): () => void
   roomSetPack(packId: string): Promise<void>
   roomDownloadPack(): Promise<DubPack>
@@ -147,6 +156,7 @@ export interface DesktopApi {
     options: ExportOptions,
   ): Promise<ExportResult | null>
   renderDubPreview(projectId: string, options: ExportOptions): Promise<string>
+  cancelExport(projectId: string): Promise<void>
   onExportProgress(callback: (progress: ExportProgress) => void): () => void
   revealExport(projectId: string): Promise<void>
 }

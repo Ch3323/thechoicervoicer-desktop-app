@@ -46,7 +46,7 @@ export function ConfirmDialog({
           onCancel()
         }
       }}
-      className="confirm-dialog rounded-2xl border border-border bg-card p-6 text-foreground"
+      className="confirm-dialog border border-border bg-card p-6 text-foreground"
     >
       <h2 id="confirm-dialog-title" className="text-2xl font-black">
         {title}
