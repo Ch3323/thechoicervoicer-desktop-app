@@ -296,7 +296,9 @@ describe('HomePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings menu' }))
     expect(
       await screen.findByRole('region', { name: 'Settings panel' }),
-    ).toHaveTextContent('1.2.3')
+    ).not.toHaveTextContent('1.2.3')
+    expect(await screen.findByText('1.2.3')).toBeInTheDocument()
+    expect(screen.getByLabelText('App version')).toHaveTextContent('1.2.3')
     expect(
       screen.getByRole('complementary', { name: 'Studio sidebar' }),
     ).toContainElement(screen.getByRole('region', { name: 'Settings panel' }))
@@ -306,10 +308,10 @@ describe('HomePage', () => {
     expect(screen.getByText(/Version 1\.2\.4 is ready to download/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
     expect(checkForUpdates).toHaveBeenCalledOnce()
-    fireEvent.click(screen.getByRole('button', { name: 'Download update' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
     expect(downloadUpdate).toHaveBeenCalledOnce()
     act(() => onUpdateStatus({ phase: 'downloaded', version: '1.2.4' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     expect(installUpdate).toHaveBeenCalledOnce()
   })
 

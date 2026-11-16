@@ -29,14 +29,16 @@ function heading(status: UpdateStatus): string {
   }
 }
 
-function detail(status: UpdateStatus): string | null {
+function detail(status: UpdateStatus, compact: boolean): string | null {
   switch (status.phase) {
     case 'available': return `Version ${status.version ?? 'new'} is ready to download. You decide when to update.`
     case 'downloading': return `Downloading… ${status.percent ?? 0}%`
     case 'downloaded': return `Version ${status.version ?? 'new'} is ready. Install when you are ready.`
     case 'checking': return 'Looking for a newer version on GitHub…'
     case 'error': return status.message ?? 'Try checking again.'
-    case 'disabled': return status.message?.includes('no update feed')
+    case 'disabled': return compact
+      ? 'Install a GitHub release to check.'
+      : status.message?.includes('no update feed')
       ? status.message
       : 'Install a GitHub release to check for updates.'
     default: return null
@@ -54,35 +56,37 @@ export function UpdateControls({ compact = false }: { compact?: boolean }) {
       setActionError(error instanceof Error ? error.message : String(error))
     }
   }
-  const description = actionError ?? detail(status)
+  const description = actionError ?? detail(status, compact)
 
   return (
-    <section aria-label="Updates" className={`flex items-center gap-4 p-4 text-foreground ${compact ? 'flex-wrap' : 'flex-wrap md:flex-nowrap'}`}>
-      <div className={`relative shrink-0 ${compact ? 'size-14' : 'size-[72px]'}`} aria-hidden="true">
+    <section aria-label="Updates" className={compact
+      ? 'grid grid-cols-[20px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 px-[10px] py-[14px] text-foreground'
+      : 'flex flex-wrap items-center gap-4 p-4 text-foreground md:flex-nowrap'}>
+      <div className={`relative shrink-0 ${compact ? 'mt-0.5 size-5' : 'size-[72px]'}`} aria-hidden="true">
         <RefreshCcw className={`!h-full !w-full text-primary ${status.phase === 'checking' ? 'animate-spin' : ''}`} strokeWidth={2.1} />
         {status.phase === 'current' && (
-          <span className="absolute bottom-0 right-0 grid size-8 place-items-center rounded-full bg-primary text-primary-foreground">
-            <Check className="!size-4" strokeWidth={3} />
+          <span className={`absolute bottom-0 right-0 grid place-items-center rounded-full bg-primary text-primary-foreground ${compact ? 'size-3 translate-x-1 translate-y-1' : 'size-8'}`}>
+            <Check className={compact ? '!size-2' : '!size-4'} strokeWidth={3} />
           </span>
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <p role="status" className="text-[17px] font-semibold leading-tight">{heading(status)}</p>
+        <p role="status" className={`${compact ? 'text-sm' : 'text-[17px]'} font-semibold leading-tight`}>{heading(status)}</p>
         {description && <p className="mt-1 text-xs leading-snug text-muted-foreground">{description}</p>}
-        <p className="mt-0.5 text-xs text-muted-foreground">{lastCheckedText(status.checkedAt)}</p>
+        <p className={`mt-0.5 text-muted-foreground ${compact ? 'text-[11px]' : 'text-xs'}`}>{lastCheckedText(status.checkedAt)}</p>
         {status.phase === 'downloading' && (
           <progress aria-label="Update download progress" className="mt-2 w-full accent-primary" value={status.percent ?? 0} max={100} />
         )}
       </div>
-      <div className={`flex flex-wrap gap-2 ${compact ? 'w-full justify-end' : 'shrink-0'}`}>
-        <Button size="sm" onClick={() => void run(window.studio.checkForUpdates)}>
+      <div className={`flex flex-wrap gap-2 ${compact ? 'col-start-2 justify-start' : 'shrink-0'}`}>
+        <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.checkForUpdates)}>
           Check for updates
         </Button>
         {status.phase === 'available' && (
-          <Button size="sm" onClick={() => void run(window.studio.downloadUpdate)}>Download update</Button>
+          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.downloadUpdate)}>{compact ? 'Download' : 'Download update'}</Button>
         )}
         {status.phase === 'downloaded' && (
-          <Button size="sm" onClick={() => void run(window.studio.installUpdate)}>Install and restart</Button>
+          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.installUpdate)}>{compact ? 'Install' : 'Install and restart'}</Button>
         )}
       </div>
     </section>

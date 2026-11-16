@@ -594,7 +594,11 @@ export function HomePage({
             {sidebarSection === 'settings' && <HomeSettings />}
           </div>
           <div className="home-sidebar-foot">
-            <FolderOpen aria-hidden="true" /> YOUR FILES STAY LOCAL
+            {sidebarSection === 'settings' ? (
+              <SidebarVersion />
+            ) : (
+              <><FolderOpen aria-hidden="true" /> YOUR FILES STAY LOCAL</>
+            )}
           </div>
         </aside>
       )}
@@ -805,21 +809,6 @@ export function HomePage({
 }
 
 function HomeSettings() {
-  const [version, setVersion] = useState('Loading…')
-  useEffect(() => {
-    let active = true
-    window.studio.getAppVersion().then(
-      (value) => {
-        if (active) setVersion(value)
-      },
-      () => {
-        if (active) setVersion('Unavailable')
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [])
   return (
     <section className="home-settings" aria-label="Settings panel">
       <p className="eyebrow cyan">APPLICATION</p>
@@ -834,18 +823,29 @@ function HomeSettings() {
           </span>
           <b>Dark</b>
         </div>
-        <div>
-          <Info aria-hidden="true" />
-          <span>
-            <strong>Version</strong>
-            <small>The Choicer Voicer At Home</small>
-          </span>
-          <b>{version}</b>
-        </div>
         <div className="!block !p-0">
           <UpdateControls compact />
         </div>
       </div>
     </section>
+  )
+}
+
+function SidebarVersion() {
+  const [version, setVersion] = useState('Loading…')
+  useEffect(() => {
+    let active = true
+    window.studio.getAppVersion().then(
+      (value) => { if (active) setVersion(value) },
+      () => { if (active) setVersion('Unavailable') },
+    )
+    return () => { active = false }
+  }, [])
+  return (
+    <div className="flex w-full items-center gap-2" aria-label="App version">
+      <Info aria-hidden="true" />
+      <span>VERSION</span>
+      <strong className="ml-auto text-foreground">{version}</strong>
+    </div>
   )
 }
