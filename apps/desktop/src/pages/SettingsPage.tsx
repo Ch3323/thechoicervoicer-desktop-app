@@ -62,12 +62,8 @@ export function SettingsPage() {
               </div>
               <span className="text-sm text-muted-foreground">{version}</span>
             </div>
-            <div className="flex items-center gap-4 p-6">
-              <Info className="size-5 text-primary" aria-hidden="true" />
-              <div className="min-w-0 flex-1">
-                <h2 className="font-medium">Updates</h2>
-                <UpdateControls />
-              </div>
+            <div className="p-0">
+              <UpdateControls />
             </div>
           </div>
         </main>

@@ -842,12 +842,8 @@ function HomeSettings() {
           </span>
           <b>{version}</b>
         </div>
-        <div className="!items-start">
-          <Info aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <strong>Updates</strong>
-            <UpdateControls />
-          </div>
+        <div className="!block !p-0">
+          <UpdateControls compact />
         </div>
       </div>
     </section>

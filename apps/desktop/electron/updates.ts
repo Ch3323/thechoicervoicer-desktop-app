@@ -11,13 +11,14 @@ export function registerUpdates(
   isBusy: () => boolean,
 ): void {
   const enabled = app.isPackaged && process.platform === 'win32' && existsSync(join(process.resourcesPath, 'app-update.yml'))
-  let status: UpdateStatus = enabled ? { phase: 'idle' } : { phase: 'disabled', message: 'Updates are available in installed Windows releases.' }
+  let status: UpdateStatus = enabled ? { phase: 'idle' } : { phase: 'disabled', message: 'Check for latest update.' }
   let checking = false
   let downloading = false
   let queuedManualCheck = false
   let recording = false
+  let lastCheckedAt: string | undefined
   const setStatus = (next: UpdateStatus) => {
-    status = next
+    status = { ...next, checkedAt: lastCheckedAt }
     getWindow()?.webContents.send('updates:status', status)
   }
   const busy = () => isBusy() || recording
@@ -48,6 +49,8 @@ export function registerUpdates(
       setStatus({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally {
       checking = false
+      lastCheckedAt = new Date().toISOString()
+      setStatus(status)
     }
   }
 

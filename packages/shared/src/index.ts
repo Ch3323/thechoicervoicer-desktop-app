@@ -31,6 +31,7 @@ export interface UpdateStatus {
   version?: string
   percent?: number
   message?: string
+  checkedAt?: string
 }
 
 export interface DesktopApi {
