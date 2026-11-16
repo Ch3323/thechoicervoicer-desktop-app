@@ -10,13 +10,10 @@
   scrollbar-width: thin;
 }
 
-/* Chromium uses the same track and thumb geometry for vertical and horizontal panels. */
-@supports (-webkit-appearance: none) {
-  :root,
-  :root * {
-    scrollbar-color: auto;
-    scrollbar-width: auto;
-  }
+/* The pack rack has an older local rule; keep its real scrollbar in sync. */
+:root .studio-pack-rack-scroll {
+  scrollbar-color: var(--studio-scrollbar-thumb) var(--studio-scrollbar-track);
+  scrollbar-width: thin;
 }
 
 :root::-webkit-scrollbar,
@@ -28,6 +25,11 @@
 :root::-webkit-scrollbar-track,
 :root *::-webkit-scrollbar-track {
   background: var(--studio-scrollbar-track);
+}
+
+:root::-webkit-scrollbar-button,
+:root *::-webkit-scrollbar-button {
+  display: none;
 }
 
 :root::-webkit-scrollbar-thumb,

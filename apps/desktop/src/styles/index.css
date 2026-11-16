@@ -382,8 +382,7 @@ a {
     inset 0 1px #ffffff0b,
     0 16px 30px #0005;
 }
-.studio-pack-rack-heading,
-.studio-pack-rack-bottom {
+.studio-pack-rack-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -550,24 +549,6 @@ a {
 .studio-pack-upload .studio-pack-tape-foot {
   color: #d3a43d;
   font-size: 7px;
-}
-.studio-pack-rack-bottom {
-  gap: 8px;
-  border-top: 1px solid #314042;
-}
-.studio-pack-rack-bottom button {
-  width: 22px;
-  color: #9bafad;
-  font-size: 18px;
-}
-.studio-pack-rack-bottom button:hover {
-  color: #20ddea;
-}
-.studio-pack-rack-track {
-  height: 5px;
-  flex: 1;
-  border-radius: 5px;
-  background: #364345;
 }
 .studio-pack-rack > p[role='alert'] {
   margin: 8px 0 0;

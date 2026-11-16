@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AudioLines,
   Archive,
@@ -54,7 +54,6 @@ export function HomePage({
   const [sidebarSection, setSidebarSection] = useState<
     'packs' | 'recordings' | 'settings' | null
   >(null)
-  const rackRef = useRef<HTMLDivElement>(null)
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -664,7 +663,7 @@ export function HomePage({
             <h2>YOUR PACKS</h2>
             <span>{packs.length} TAPES</span>
           </div>
-          <div ref={rackRef} className="studio-pack-rack-scroll">
+          <div className="studio-pack-rack-scroll">
             {packs.map((pack) => (
               <button
                 key={pack.id}
@@ -711,27 +710,6 @@ export function HomePage({
                 <small>FROM THIS DEVICE</small>
               </span>
               <span className="studio-pack-tape-foot">CHOOSE FILE</span>
-            </button>
-          </div>
-          <div className="studio-pack-rack-bottom">
-            <button
-              type="button"
-              aria-label="Scroll packs left"
-              onClick={() =>
-                rackRef.current?.scrollBy({ left: -320, behavior: 'smooth' })
-              }
-            >
-              ‹
-            </button>
-            <span className="studio-pack-rack-track" aria-hidden="true" />
-            <button
-              type="button"
-              aria-label="Scroll packs right"
-              onClick={() =>
-                rackRef.current?.scrollBy({ left: 320, behavior: 'smooth' })
-              }
-            >
-              ›
             </button>
           </div>
         </section>
