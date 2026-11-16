@@ -302,7 +302,7 @@ describe('HomePage', () => {
     ).toContainElement(screen.getByRole('region', { name: 'Settings panel' }))
     expect(screen.getByText('YOUR SCENE STARTS HERE')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Imported packs' })).toBeNull()
-    expect(screen.getByText('Version 1.2.4 is available.')).toBeInTheDocument()
+    expect(screen.getByText(/Version 1\.2\.4 is available/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
     expect(checkForUpdates).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('button', { name: 'Download update' }))

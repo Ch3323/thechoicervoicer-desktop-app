@@ -14,6 +14,7 @@ export function registerUpdates(
   let status: UpdateStatus = enabled ? { phase: 'idle' } : { phase: 'disabled', message: 'Updates are available in installed Windows releases.' }
   let checking = false
   let downloading = false
+  let queuedManualCheck = false
   let recording = false
   const setStatus = (next: UpdateStatus) => {
     status = next
@@ -23,12 +24,26 @@ export function registerUpdates(
   const validateSender = (event: Electron.IpcMainInvokeEvent) => {
     if (event.sender !== getWindow()?.webContents) throw new Error('Invalid sender')
   }
-  const check = async () => {
-    if (!enabled || checking || downloading || status.phase === 'downloaded') return
+  const check = async (manual = false) => {
+    if (!enabled) {
+      if (manual) setStatus({ phase: 'disabled', message: 'This build has no update feed. Install a GitHub release to check.' })
+      return
+    }
+    if (checking) return
+    if (downloading) {
+      if (manual) {
+        queuedManualCheck = true
+        setStatus({ ...status, message: 'A new check will run after this download finishes.' })
+      }
+      return
+    }
+    const readyVersion = status.phase === 'downloaded' ? status.version : undefined
     checking = true
     setStatus({ phase: 'checking' })
     try {
-      await autoUpdater.checkForUpdates()
+      const result = await autoUpdater.checkForUpdates()
+      if (readyVersion && (!result || result.updateInfo.version === readyVersion))
+        setStatus({ phase: 'downloaded', version: readyVersion })
     } catch (error) {
       setStatus({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -37,7 +52,7 @@ export function registerUpdates(
   }
 
   ipcMain.handle('updates:status', (event) => { validateSender(event); return status })
-  ipcMain.handle('updates:check', async (event) => { validateSender(event); await check() })
+  ipcMain.handle('updates:check', async (event) => { validateSender(event); await check(true) })
   ipcMain.handle('updates:download', async (event) => {
     validateSender(event)
     if (!enabled || status.phase !== 'available' || downloading) return
@@ -49,6 +64,10 @@ export function registerUpdates(
       setStatus({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally {
       downloading = false
+      if (queuedManualCheck) {
+        queuedManualCheck = false
+        void check(true)
+      }
     }
   })
   ipcMain.handle('updates:recording-activity', (event, active: unknown) => {
