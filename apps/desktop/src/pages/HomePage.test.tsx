@@ -294,6 +294,7 @@ describe('HomePage', () => {
       listPacks: async () => [],
       listProjects: async () => [],
       getAppVersion: async () => '1.2.3',
+      getDriveStatus: async () => ({ connected: false }),
       getUpdateStatus: async () => ({ phase: 'available', version: '1.2.4' }),
       onUpdateStatus: (callback: (status: UpdateStatus) => void) => {
         onUpdateStatus = callback
@@ -313,6 +314,7 @@ describe('HomePage', () => {
     expect(
       screen.getByRole('complementary', { name: 'Studio sidebar' }),
     ).toContainElement(screen.getByRole('region', { name: 'Settings panel' }))
+    expect(screen.queryByText('Google Drive exports')).toBeNull()
     expect(screen.getByText('YOUR SCENE STARTS HERE')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Imported packs' })).toBeNull()
     expect(screen.getByText('Update available')).toBeInTheDocument()
@@ -482,12 +484,10 @@ describe('HomePage', () => {
     expect(await screen.findByTestId('studio')).toHaveTextContent(project.id)
   })
 
-  it('waits for an imported pack preview before showing its studio', async () => {
-    let finishPreview!: (url: string) => void
+  it('opens an imported pack while its video preview prepares', async () => {
     let imported = false
-    const previewReady = new Promise<string>((resolve) => {
-      finishPreview = resolve
-    })
+    const previewReady = new Promise<string>(() => undefined)
+    const getPreviewUrl = vi.fn(() => previewReady)
     const createProject = vi.fn(async () => project)
     window.studio = {
       listPacks: async () => (imported ? [pack] : []),
@@ -497,7 +497,7 @@ describe('HomePage', () => {
         return pack
       },
       onImportProgress: () => () => {},
-      getPreviewUrl: () => previewReady,
+      getPreviewUrl,
       createProject,
       getAssetUrl: async () => 'studio-media://pack/cover.png',
     } as unknown as DesktopApi
@@ -508,15 +508,9 @@ describe('HomePage', () => {
       ).not.toBeDisabled(),
     )
     fireEvent.click(screen.getByRole('button', { name: 'UPLOAD DUB PACK' }))
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Preparing video preview',
-    )
-    expect(screen.getByRole('dialog')).toHaveTextContent(
-      'Preparing video preview',
-    )
-    expect(createProject).not.toHaveBeenCalled()
-    finishPreview('studio-media://pack-1/preview.mp4')
+    await waitFor(() => expect(getPreviewUrl).toHaveBeenCalledWith(pack.id))
     expect(await screen.findByTestId('studio')).toHaveTextContent(project.id)
+    expect(createProject).toHaveBeenCalledWith(pack.id)
   })
 
   it('requires an in-app confirmation before deleting a recording', async () => {

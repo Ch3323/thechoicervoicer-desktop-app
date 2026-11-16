@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
-import { AudioLines, Users } from 'lucide-react'
+import { Users } from 'lucide-react'
+import { BrandLockup } from '@/components/BrandLockup'
 
 export function SessionTopBar({
   title,
@@ -21,12 +22,7 @@ export function SessionTopBar({
         to="/"
         aria-label="The Choicer Voicer At Home home"
       >
-        <span className="session-topbar-mark">
-          <AudioLines aria-hidden="true" />
-        </span>
-        <span>
-          CHOICER <strong>VOICER</strong> STUDIO
-        </span>
+        <BrandLockup />
       </Link>
       <span className="session-topbar-now">
         NOW DUBBING <strong>{title ?? 'Choose a Dub Pack'}</strong>

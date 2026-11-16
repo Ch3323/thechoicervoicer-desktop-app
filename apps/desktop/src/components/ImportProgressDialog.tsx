@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import type { ImportProgress } from '@studio/shared'
 
-type Progress =
-  ImportProgress | { phase: 'preparing'; completedBytes: 0; totalBytes: 0 }
-
-export function ImportProgressDialog({ progress }: { progress: Progress }) {
+export function ImportProgressDialog({
+  progress,
+}: {
+  progress: ImportProgress
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null)
 
   useEffect(() => {
@@ -12,6 +13,7 @@ export function ImportProgressDialog({ progress }: { progress: Progress }) {
     if (!dialog) return
     if (dialog.showModal) dialog.showModal()
     else dialog.setAttribute('open', '')
+    dialog.focus()
     return () => {
       if (dialog.close && dialog.open) dialog.close()
       else dialog.removeAttribute('open')
@@ -29,12 +31,12 @@ export function ImportProgressDialog({ progress }: { progress: Progress }) {
     scanning: 'Checking ZIP archive…',
     extracting: 'Importing Dub Pack…',
     saving: 'Saving Dub Pack…',
-    preparing: 'Preparing video preview…',
   }[progress.phase]
 
   return (
     <dialog
       ref={dialogRef}
+      tabIndex={-1}
       aria-labelledby="import-progress-title"
       aria-describedby="import-progress-description"
       onCancel={(event) => event.preventDefault()}
@@ -48,9 +50,7 @@ export function ImportProgressDialog({ progress }: { progress: Progress }) {
         id="import-progress-description"
         className="mt-3 text-sm text-muted-foreground"
       >
-        {progress.phase === 'preparing'
-          ? 'Large videos can take a little while.'
-          : 'Keep this window open while the pack is added to your library.'}
+        Keep this window open while the pack is added to your library.
       </p>
       <progress
         className="import-progress-bar mt-6 h-3 w-full overflow-hidden rounded-full"

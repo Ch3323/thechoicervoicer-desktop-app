@@ -82,7 +82,7 @@ describe('RoomPage setup', () => {
       }),
     )
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Name already taken',
+      'Choose another name to join',
     )
     expect(getRoomJoinInfo).toHaveBeenCalledWith(
       '127.0.0.1:4318',
@@ -565,8 +565,10 @@ it('updates role recording progress in the room modal during play', async () => 
       <RoomPage />
     </MemoryRouter>,
   )
-  fireEvent.click(await screen.findByRole('button', { name: /IN ROOM/ }))
-  const lobby = screen.getByRole('dialog', { name: 'Room lobby' })
+  const roomButton = await screen.findByRole('button', { name: /IN ROOM/ })
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  fireEvent.click(roomButton)
+  const lobby = await screen.findByRole('dialog', { name: 'Room lobby' })
   const incomplete = within(lobby).getByLabelText(
     `${pack.characters[0].name}: 0 of 1 lines recorded`,
   )
@@ -889,6 +891,10 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
     roomGetWaveform: async () => null,
     roomGetTakeUrl: async (takeId: string) =>
       `studio-media://room/take/${takeId}`,
+    getPreviewTakeAudio: async () => ({
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'audio/wav',
+    }),
     roomRenderPreview,
     onRoomRenderProgress: () => () => undefined,
     roomCancelRender,
@@ -906,7 +912,7 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   fireEvent.click(button)
   expect(
     await screen.findByRole('dialog', { name: 'Watch dub' }),
-  ).toHaveTextContent('0 of 2 lines recorded. Missing lines play silently.')
+  ).toHaveTextContent('0/2 lines recorded · Missing lines play silently.')
   expect(
     screen.queryByLabelText('Use backing track in export'),
   ).not.toBeInTheDocument()
@@ -922,7 +928,12 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   fireEvent.change(volume, { target: { value: '150' } })
   expect(gain.gain.value).toBe(1.5)
   expect(screen.getByRole('button', { name: 'Export video' })).toBeEnabled()
-  await waitFor(() => expect(roomRenderPreview).toHaveBeenCalledWith())
+  await waitFor(() =>
+    expect(
+      screen.getByRole('dialog', { name: 'Watch dub' }).querySelector('video'),
+    ).toHaveAttribute('src', 'studio-media://room/preview'),
+  )
+  expect(roomRenderPreview).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Close watch dub' }))
   await waitFor(() => expect(roomCancelRender).toHaveBeenCalled())
 
@@ -953,14 +964,16 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   expect(
     screen.queryByRole('button', { name: 'Replay' }),
   ).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Re-render' })).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Refresh preview' }),
+  ).toBeInTheDocument()
   expect(
     screen.getByRole('button', { name: 'Export video' }),
   ).toBeInTheDocument()
   await waitFor(() =>
     expect(dialog.querySelector('video')).toHaveAttribute(
       'src',
-      'studio-media://room-local/preview.mp4',
+      'studio-media://room/preview',
     ),
   )
   const video = dialog.querySelector('video')!
@@ -976,6 +989,7 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
       useBackingTrack: true,
       requireComplete: false,
       backingVolume: 1.5,
+      dubbingVolume: 1,
       fastMode: false,
     }),
   )

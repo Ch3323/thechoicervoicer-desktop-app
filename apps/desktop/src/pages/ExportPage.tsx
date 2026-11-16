@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, CheckCircle2, FolderOpen, Film } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
@@ -8,6 +9,7 @@ import {
   type ExportOptions,
   type ExportResult,
   type RecordingTake,
+  googleDriveExportsEnabled,
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -20,16 +22,23 @@ export function ExportPage() {
   const [options, setOptions] = useState<ExportOptions>({
     useBackingTrack: true,
     requireComplete: true,
+    backingVolume: 1,
+    dubbingVolume: 1,
   })
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
   const [result, setResult] = useState<ExportResult | null>(null)
+  const [driveConnected, setDriveConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
     if (!projectId) return
+    if (googleDriveExportsEnabled)
+      window.studio.getDriveStatus().then((status) => {
+        if (active) setDriveConnected(status.connected)
+      })
     Promise.all([
       window.studio.listProjects(),
       window.studio.listPacks(),
@@ -77,7 +86,9 @@ export function ExportPage() {
     setError(null)
     setResult(null)
     setProgress(0)
-    setMessage('Choose an output file…')
+    setMessage(
+      driveConnected ? 'Rendering for Google Drive…' : 'Choose an output file…',
+    )
     try {
       const finished = await window.studio.exportProject(project.id, options)
       if (finished) {
@@ -125,7 +136,7 @@ export function ExportPage() {
               className={`mt-8 ${error ? 'text-red-300' : 'text-muted-foreground'}`}
               role={error ? 'alert' : undefined}
             >
-              {error ?? 'Loading project…'}
+              {error ? playerError(error) : 'Loading project…'}
             </p>
           ) : (
             <div className="mt-9 grid gap-6 lg:grid-cols-[1.3fr_1fr]">
@@ -188,6 +199,46 @@ export function ExportPage() {
                       </span>
                     </span>
                   </div>
+                  {pack.backingTrackRef && options.useBackingTrack && (
+                    <label className="mt-5 flex items-center gap-3 text-sm">
+                      Backing track volume
+                      <input
+                        aria-label="Backing track volume"
+                        type="range"
+                        min="0"
+                        max="200"
+                        step="5"
+                        value={Math.round((options.backingVolume ?? 1) * 100)}
+                        onChange={(event) =>
+                          setOptions({
+                            ...options,
+                            backingVolume: Number(event.target.value) / 100,
+                          })
+                        }
+                        className="w-32 accent-primary"
+                      />
+                      {Math.round((options.backingVolume ?? 1) * 100)}%
+                    </label>
+                  )}
+                  <label className="mt-5 flex items-center gap-3 text-sm">
+                    Dubbing track volume
+                    <input
+                      aria-label="Dubbing track volume"
+                      type="range"
+                      min="0"
+                      max="200"
+                      step="5"
+                      value={Math.round((options.dubbingVolume ?? 1) * 100)}
+                      onChange={(event) =>
+                        setOptions({
+                          ...options,
+                          dubbingVolume: Number(event.target.value) / 100,
+                        })
+                      }
+                      className="w-32 accent-primary"
+                    />
+                    {Math.round((options.dubbingVolume ?? 1) * 100)}%
+                  </label>
                   <p className="mt-6 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
                     The source video audio is excluded so original dialogue is
                     not mixed over your takes. Without a usable backing track,
@@ -202,7 +253,11 @@ export function ExportPage() {
                         timeline.missingDialogueIds.length > 0)
                     }
                   >
-                    {busy ? 'Exporting…' : 'Choose file and export MP4'}
+                    {busy
+                      ? 'Exporting…'
+                      : driveConnected
+                        ? 'Export MP4 to Google Drive'
+                        : 'Choose file and export MP4'}
                   </Button>
                 </section>
                 {(busy || result || message) && (
@@ -231,20 +286,34 @@ export function ExportPage() {
                       <h2 className="font-semibold">Export complete</h2>
                     </div>
                     <p className="mt-3 break-all text-sm">
-                      {result.outputPath}
+                      {result.destination === 'drive'
+                        ? 'Uploaded to Google Drive'
+                        : result.outputPath}
                     </p>
                     {result.warnings.map((warning) => (
                       <p key={warning} className="mt-2 text-sm text-amber-100">
                         {warning}
                       </p>
                     ))}
-                    <Button
-                      className="mt-5"
-                      variant="secondary"
-                      onClick={() => void reveal()}
-                    >
-                      <FolderOpen aria-hidden="true" /> Open output folder
-                    </Button>
+                    {result.destination === 'drive' ? (
+                      <Button
+                        className="mt-5"
+                        variant="secondary"
+                        onClick={() =>
+                          void window.studio.openDriveExport(result.outputPath)
+                        }
+                      >
+                        Open in Google Drive
+                      </Button>
+                    ) : (
+                      <Button
+                        className="mt-5"
+                        variant="secondary"
+                        onClick={() => void reveal()}
+                      >
+                        <FolderOpen aria-hidden="true" /> Open output folder
+                      </Button>
+                    )}
                   </section>
                 )}
                 {!result && project.lastExportPath && (
@@ -257,7 +326,7 @@ export function ExportPage() {
                     role="alert"
                     className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
                   >
-                    {error}
+                    {playerError(error)}
                   </p>
                 )}
               </div>

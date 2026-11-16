@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useCallback, useEffect, useState } from 'react'
 import {
   AudioLines,
@@ -24,7 +25,10 @@ import { PackThumbnail } from '@/components/PackThumbnail'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ImportProgressDialog } from '@/components/ImportProgressDialog'
 import { SessionTopBar } from '@/components/SessionTopBar'
+import { BrandLockup } from '@/components/BrandLockup'
 import { UpdateControls } from '@/components/UpdateControls'
+import { DriveSettings } from '@/components/DriveSettings'
+import { googleDriveExportsEnabled } from '@studio/shared'
 import { WorkspacePage } from '@/pages/WorkspacePage'
 import { RoomPage } from '@/pages/RoomPage'
 
@@ -63,11 +67,9 @@ export function HomePage({
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [importProgress, setImportProgress] = useState<
-    | ImportProgress
-    | { phase: 'preparing'; completedBytes: 0; totalBytes: 0 }
-    | null
-  >(null)
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(
+    null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [pendingRemoval, setPendingRemoval] = useState<{
     pack: DubPack
@@ -157,7 +159,9 @@ export function HomePage({
 
   useEffect(() => {
     if (!packMenu) return
-    const close = () => setPackMenu(null)
+    const close = () => {
+      if (!document.querySelector('dialog[open]')) setPackMenu(null)
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close()
     }
@@ -254,12 +258,7 @@ export function HomePage({
       const pack = await window.studio.importPack()
       if (!pack) return
       setPacks(await window.studio.listPacks())
-      setImportProgress({
-        phase: 'preparing',
-        completedBytes: 0,
-        totalBytes: 0,
-      })
-      await window.studio.getPreviewUrl(pack.id)
+      void window.studio.getPreviewUrl(pack.id).catch(() => undefined)
       const project = await window.studio.createProject(pack.id)
       setProjects((current) => [...current, project])
       if (roomInfo) setPendingPack({ pack, projectId: project.id })
@@ -431,9 +430,7 @@ export function HomePage({
           aria-label="Studio sidebar"
         >
           <div className="home-sidebar-brand">
-            <strong>
-              CHOICER <span>VOICER</span>
-            </strong>
+            <BrandLockup compact />
             <button
               type="button"
               onClick={() => setSidebarSection(null)}
@@ -701,7 +698,7 @@ export function HomePage({
       <main className="home-content">
         {error && (
           <p role="alert" className="home-alert">
-            {error}
+            {playerError(error)}
           </p>
         )}
         <div className="home-content-body">
@@ -963,6 +960,11 @@ function HomeSettings() {
         <div className="!block !p-0">
           <UpdateControls compact />
         </div>
+        {googleDriveExportsEnabled && (
+          <div className="!block">
+            <DriveSettings />
+          </div>
+        )}
       </div>
     </section>
   )

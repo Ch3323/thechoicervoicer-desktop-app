@@ -5,5 +5,6 @@
 3. **Single-player dubbing (complete):** microphone capture, multiple saved takes per dialogue, timing offsets, project resume, absolute-time audio timeline, and FFmpeg MP4 export with progress and missing-line guard.
 4. **LAN collaboration (complete):** embedded Fastify and Socket.IO server, room discovery, matching local Dub Packs, authoritative role ownership, bounded take uploads, synchronized recording progress, session reconnection, and local preview and export on every player's device.
 5. **Release hardening (future):** Windows installer validation, signing, updates, accessibility review, and hardware end-to-end testing.
+6. **Optional Google Drive exports (future):** connect an account and folder, upload an exported MP4, and remove the temporary render. The implementation is parked behind `googleDriveExportsEnabled = false` for v1.1; the controls, IPC handlers, and automatic upload path are inactive until the OAuth setup and end-to-end Drive flow are ready to ship.
 
 Future phases should keep portable business logic independent of Electron and React where practical.

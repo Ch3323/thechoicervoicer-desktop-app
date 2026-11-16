@@ -15,6 +15,8 @@ import { pipeline } from 'node:stream/promises'
 import yauzl, { type Entry, type ZipFile } from 'yauzl'
 import {
   parseDubPack,
+  isPackFileName,
+  isPackVideoFileName,
   PackValidationError,
   type DubPack,
   type PackFile,
@@ -24,7 +26,6 @@ import {
 const MAX_TEXT_BYTES = 1024 * 1024
 const MAX_ZIP_BYTES = 8 * 1024 * 1024 * 1024
 const MAX_ZIP_ENTRIES = 10_000
-const allowedFile = /\.(ogv|mp3|ogg|wav|m4a|ini|cfg|txt|png|jpe?g)$/i
 
 function packId(source: string): string {
   return createHash('sha256')
@@ -50,14 +51,23 @@ export async function readPackFolder(
   id: string,
 ): Promise<DubPack> {
   const entries = await readdir(folder, { withFileTypes: true })
-  const files: PackFile[] = []
-  for (const entry of entries) {
-    if (!entry.isFile() || !allowedFile.test(entry.name)) continue
-    files.push({
-      path: entry.name,
-      text: await readTextFile(join(folder, entry.name)),
-    })
-  }
+  const selected = entries.filter(
+    (entry) => entry.isFile() && isPackFileName(entry.name),
+  )
+  const files = new Array<PackFile>(selected.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(8, selected.length) }, async () => {
+      while (next < selected.length) {
+        const index = next++
+        const entry = selected[index]
+        files[index] = {
+          path: entry.name,
+          text: await readTextFile(join(folder, entry.name)),
+        }
+      }
+    }),
+  )
   return parseDubPack({
     id,
     source: { kind: sourceKind, location: sourceLocation },
@@ -162,11 +172,11 @@ export async function importZip(
     const discoveryZip = await openZip(archivePath)
     const allEntries = await entriesOf(discoveryZip)
     const videoEntries = allEntries.filter(
-      (entry) => basename(entry.fileName).toLowerCase() === 'dub_video.ogv',
+      (entry) => isPackVideoFileName(basename(entry.fileName)),
     )
     if (videoEntries.length !== 1)
       throw new PackValidationError(
-        'ZIP must contain exactly one Dub Pack video named dub_video.ogv.',
+        'ZIP must contain exactly one Dub Pack video named dub_video.<extension>.',
       )
     const prefix = dirname(videoEntries[0].fileName).replace(/\\/g, '/')
     const rootPrefix = prefix === '.' ? '' : `${prefix}/`
@@ -174,7 +184,7 @@ export async function importZip(
       (entry) =>
         entry.fileName.startsWith(rootPrefix) &&
         !entry.fileName.slice(rootPrefix.length).includes('/') &&
-        allowedFile.test(entry.fileName),
+        isPackFileName(basename(entry.fileName)),
     )
     const expected = new Set(
       selected.map((entry) => entry.fileName.toLowerCase()),

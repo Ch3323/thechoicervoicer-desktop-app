@@ -1,10 +1,23 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  session,
+  shell,
+} from 'electron'
 import { basename, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
-import { mkdir, rm, stat, writeFile, rename } from 'node:fs/promises'
+import { mkdir, rm, stat, rename } from 'node:fs/promises'
 import { mkdirSync } from 'node:fs'
+import { createWriteStream } from 'node:fs'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
-import { VoiceEffectSchema } from '@studio/shared'
+import { VoiceEffectSchema, googleDriveExportsEnabled } from '@studio/shared'
 import { LibraryStore } from './library-store'
 import {
   getAssetUrl,
@@ -17,6 +30,7 @@ import { recordingPath, saveRecording } from './recordings'
 import { exportProject } from './export'
 import { getDialogueWaveform } from './waveform'
 import { effectTakeUrl } from './effect-preview'
+import { localPreviewTakeAudio, roomPreviewTakeAudio } from './preview-take'
 import { startRoomServer } from './room-server'
 import { RoomClient, parseLanAddress } from './room-client'
 import { backingPreviewBytes } from './backing-preview'
@@ -24,6 +38,7 @@ import { packFingerprint } from './pack-fingerprint'
 import { discoverRooms } from './room-discovery'
 import { downloadRoomPack } from './room-pack-download'
 import { registerUpdates } from './updates'
+import { GoogleDrive } from './google-drive'
 import {
   RecordingTakeSchema,
   DisplayNameSchema,
@@ -45,6 +60,11 @@ async function duringWrite<T>(operation: () => Promise<T>): Promise<T> {
 function createMainWindow(): void {
   const window = new BrowserWindow({
     title: 'The Choicer Voicer At Home',
+    icon: join(
+      __dirname,
+      '../../build',
+      process.platform === 'win32' ? 'icon.ico' : 'icon.png',
+    ),
     width: 1120,
     height: 760,
     minWidth: 880,
@@ -81,6 +101,12 @@ function createMainWindow(): void {
 
 let gotSingleInstanceLock = app.requestSingleInstanceLock()
 
+nativeTheme.themeSource = 'dark'
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('studio.collaborative.dubbing')
+}
+
 if (!gotSingleInstanceLock && process.env.ELECTRON_RENDERER_URL) {
   const devUserData = join(
     app.getPath('userData'),
@@ -104,6 +130,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(() => {
     const userData = app.getPath('userData')
     const store = new LibraryStore(userData)
+    const googleDrive = new GoogleDrive(userData)
     const packStorage = join(userData, 'packs')
     const previewStorage = join(userData, 'previews')
     const dubPreviewStorage = join(userData, 'dub-previews')
@@ -128,6 +155,88 @@ if (!gotSingleInstanceLock) {
         controllers.delete(controller)
         if (controllers.size === 0) exportControllers.delete(projectId)
       }
+    }
+    const exportToDrive = async (
+      sourceStore: LibraryStore,
+      recordingRoot: string,
+      projectId: string,
+      options: import('@studio/shared').ExportOptions,
+      name: string,
+      progressChannel: 'export:progress' | 'room:render-progress',
+      signal: AbortSignal,
+    ): Promise<import('@studio/shared').ExportResult> => {
+      const outputRoot = join(userData, 'drive-export-work')
+      await mkdir(outputRoot, { recursive: true })
+      const outputPath = join(outputRoot, `${randomUUID()}.mp4`)
+      try {
+        const result = await duringWrite(() =>
+          exportProject(
+            sourceStore,
+            packStorage,
+            recordingRoot,
+            projectId,
+            options,
+            outputPath,
+            (progress) =>
+              mainWindow?.webContents.send(progressChannel, {
+                ...progress,
+                percent: Math.round(progress.percent * 0.8),
+              }),
+            false,
+            signal,
+          ),
+        )
+        const url = await googleDrive.upload(
+          outputPath,
+          name,
+          signal,
+          (percent) =>
+            mainWindow?.webContents.send(progressChannel, {
+              projectId,
+              percent: 80 + Math.round(percent * 0.2),
+              message: 'Uploading to Google Drive…',
+            }),
+        )
+        mainWindow?.webContents.send(progressChannel, {
+          projectId,
+          percent: 100,
+          message: 'Google Drive upload complete',
+        })
+        return { ...result, outputPath: url, destination: 'drive' }
+      } finally {
+        await rm(outputPath, { force: true })
+      }
+    }
+    if (googleDriveExportsEnabled) {
+      ipcMain.handle('drive:status', (event) => {
+        fromMainWindow(event)
+        return googleDrive.status()
+      })
+      ipcMain.handle(
+        'drive:connect',
+        (event, clientId: unknown, folder: unknown) => {
+          fromMainWindow(event)
+          return googleDrive.connect(
+            z.string().max(300).parse(clientId),
+            z.string().max(1000).parse(folder),
+          )
+        },
+      )
+      ipcMain.handle('drive:disconnect', (event) => {
+        fromMainWindow(event)
+        return googleDrive.disconnect()
+      })
+      ipcMain.handle('drive:open-export', (event, rawUrl: unknown) => {
+        fromMainWindow(event)
+        const url = new URL(z.string().max(1000).parse(rawUrl))
+        if (
+          url.protocol !== 'https:' ||
+          url.hostname !== 'drive.google.com' ||
+          !/^\/file\/d\/[\w-]+\/view$/.test(url.pathname)
+        )
+          throw new Error('Invalid Google Drive export link')
+        return shell.openExternal(url.toString())
+      })
     }
     const roomStateChanged = (
       state: import('@studio/shared').RoomState | null,
@@ -176,26 +285,62 @@ if (!gotSingleInstanceLock) {
       await mkdir(join(roomCacheRecordings, projectId), {
         recursive: true,
       })
-      for (const rawTake of state.takes.filter((take) => take.selected)) {
-        const take = RecordingTakeSchema.parse(rawTake)
-        if (take.projectId !== projectId)
-          throw new Error('Room take belongs to another project')
-        const path = recordingPath(roomCacheRecordings, take)
-        try {
-          await stat(path)
-          continue
-        } catch {
-          /* Download the missing take. */
+      const selectedTakes = state.takes.filter((take) => take.selected)
+      let nextTake = 0
+      const downloadTake = async () => {
+        while (nextTake < selectedTakes.length) {
+          const rawTake = selectedTakes[nextTake++]
+          const take = RecordingTakeSchema.parse(rawTake)
+          if (take.projectId !== projectId)
+            throw new Error('Room take belongs to another project')
+          const path = recordingPath(roomCacheRecordings, take)
+          try {
+            await stat(path)
+            continue
+          } catch {
+            /* Download the missing take. */
+          }
+          const response = await fetch(
+            client.mediaUrl(`/media/take/${take.id}`),
+          )
+          if (!response.ok)
+            throw new Error(`Could not download take ${take.id}`)
+          if (!response.body) throw new Error('Room take has no audio data')
+          const temporary = `${path}.download`
+          let bytes = 0
+          try {
+            await pipeline(
+              Readable.fromWeb(
+                response.body as import('node:stream/web').ReadableStream,
+              ),
+              new Transform({
+                transform(chunk: Buffer, _encoding, callback) {
+                  bytes += chunk.length
+                  callback(
+                    bytes > 100 * 1024 * 1024
+                      ? new Error('Room take has an invalid size')
+                      : null,
+                    chunk,
+                  )
+                },
+              }),
+              createWriteStream(temporary),
+            )
+            if (bytes === 0) throw new Error('Room take has an invalid size')
+            await rename(temporary, path)
+          } catch (error) {
+            await rm(temporary, { force: true })
+            throw error
+          }
         }
-        const response = await fetch(client.mediaUrl(`/media/take/${take.id}`))
-        if (!response.ok) throw new Error(`Could not download take ${take.id}`)
-        const bytes = Buffer.from(await response.arrayBuffer())
-        if (!bytes.length || bytes.length > 100 * 1024 * 1024)
-          throw new Error('Room take has an invalid size')
-        const temporary = `${path}.download`
-        await writeFile(temporary, bytes)
-        await rename(temporary, path)
       }
+      const takeDownloads = await Promise.allSettled(
+        Array.from({ length: Math.min(3, selectedTakes.length) }, downloadTake),
+      )
+      const failedTake = takeDownloads.find(
+        (result) => result.status === 'rejected',
+      )
+      if (failedTake?.status === 'rejected') throw failedTake.reason
       const roomPack = roomPackForLocalAssets(state.pack, pack)
       await roomCacheStore.syncRoomSnapshot(
         roomPack,
@@ -642,6 +787,7 @@ if (!gotSingleInstanceLock) {
           useBackingTrack: z.boolean(),
           requireComplete: z.boolean(),
           backingVolume: z.number().finite().min(0).max(2).optional(),
+          dubbingVolume: z.number().finite().min(0).max(2).optional(),
           fastMode: z.boolean().optional(),
         })
         .parse(rawOptions)
@@ -651,6 +797,16 @@ if (!gotSingleInstanceLock) {
         const { pack, projectId } = await syncRoomSnapshot()
         controller.signal.throwIfAborted()
         const defaultName = `${pack.metadata.title.replace(/[<>:"/\\|?*]/g, '_').replace(/\p{Cc}/gu, '_') || 'dubbed-video'}.mp4`
+        if (googleDriveExportsEnabled && (await googleDrive.status()).connected)
+          return exportToDrive(
+            roomCacheStore,
+            roomCacheRecordings,
+            projectId,
+            options,
+            defaultName,
+            'room:render-progress',
+            controller.signal,
+          )
         const selection = await dialog.showSaveDialog(mainWindow!, {
           title: 'Export shared dub',
           defaultPath: basename(defaultName),
@@ -883,6 +1039,46 @@ if (!gotSingleInstanceLock) {
       return getTakeUrl(id)
     })
     ipcMain.handle(
+      'recordings:preview-audio',
+      (
+        event,
+        rawMode: unknown,
+        rawProjectId: unknown,
+        rawDialogueId: unknown,
+        rawTakeId: unknown,
+        rawEffect: unknown,
+      ) => {
+        fromMainWindow(event)
+        const mode = z.enum(['single', 'room']).parse(rawMode)
+        const projectId = z.uuid().parse(rawProjectId)
+        const dialogueId = z.string().min(1).max(1024).parse(rawDialogueId)
+        const takeId = z.uuid().parse(rawTakeId)
+        const effect =
+          rawEffect === undefined
+            ? undefined
+            : VoiceEffectSchema.parse(rawEffect)
+        if (mode === 'room') {
+          if (!roomClient) throw new Error('Join a room first')
+          return roomPreviewTakeAudio(
+            roomClient,
+            projectId,
+            dialogueId,
+            takeId,
+            effect,
+          )
+        }
+        return localPreviewTakeAudio(
+          store,
+          recordingStorage,
+          effectStorage,
+          projectId,
+          dialogueId,
+          takeId,
+          effect,
+        )
+      },
+    )
+    ipcMain.handle(
       'recordings:effect-url',
       (
         event,
@@ -926,6 +1122,7 @@ if (!gotSingleInstanceLock) {
             useBackingTrack: z.boolean(),
             requireComplete: z.boolean(),
             backingVolume: z.number().finite().min(0).max(2).optional(),
+            dubbingVolume: z.number().finite().min(0).max(2).optional(),
             fastMode: z.boolean().optional(),
           })
           .parse(rawOptions)
@@ -937,6 +1134,19 @@ if (!gotSingleInstanceLock) {
           if (!project || !pack)
             throw new Error('Project Dub Pack is unavailable')
           const defaultName = `${pack.metadata.title.replace(/[<>:"/\\|?*]/g, '_').replace(/\p{Cc}/gu, '_') || 'dubbed-video'}.mp4`
+          if (
+            googleDriveExportsEnabled &&
+            (await googleDrive.status()).connected
+          )
+            return exportToDrive(
+              store,
+              recordingStorage,
+              id,
+              options,
+              defaultName,
+              'export:progress',
+              controller.signal,
+            )
           const dialogResult = await dialog.showSaveDialog(mainWindow!, {
             title: 'Export dubbed video',
             defaultPath: basename(defaultName),
@@ -977,6 +1187,7 @@ if (!gotSingleInstanceLock) {
             useBackingTrack: z.boolean(),
             requireComplete: z.boolean(),
             backingVolume: z.number().finite().min(0).max(2).optional(),
+            dubbingVolume: z.number().finite().min(0).max(2).optional(),
             fastMode: z.boolean().optional(),
           })
           .parse(rawOptions)

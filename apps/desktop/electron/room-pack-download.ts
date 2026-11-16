@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, open, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -9,6 +9,7 @@ import {
   type DubPack,
   type ImportProgress,
   RoomCodeSchema,
+  isPackFileName,
 } from '@studio/shared'
 import { LibraryStore } from './library-store'
 import { readPackFolder } from './pack-files'
@@ -16,10 +17,12 @@ import { packFingerprint } from './pack-fingerprint'
 import { parseLanAddress } from './room-client'
 
 const MAX_PACK_BYTES = 8 * 1024 * 1024 * 1024
+const TRANSFER_CONCURRENCY = 4
+const RANGE_BYTES = 16 * 1024 * 1024
 const PackFile = z.object({
   name: z
     .string()
-    .regex(/^[^/\\]+\.(ogv|mp3|ogg|wav|m4a|ini|cfg|txt|png|jpe?g)$/i),
+    .refine(isPackFileName, 'Invalid pack filename'),
   size: z.number().int().nonnegative().max(MAX_PACK_BYTES),
 })
 const Manifest = z
@@ -83,23 +86,60 @@ export async function downloadRoomPack(
   let completedBytes = 0
   let lastProgress = 0
   try {
+    const transfers: {
+      name: string
+      start: number
+      end: number
+      size: number
+    }[] = []
     for (const file of manifest.files) {
-      const url = `${baseUrl}/pack/file/${encodeURIComponent(file.name)}?${query}`
-      const download = await fetch(url, { redirect: 'error' })
-      if (!download.ok || !download.body)
-        throw new Error(`Could not download ${file.name} from the Host`)
-      let fileBytes = 0
-      await pipeline(
-        Readable.fromWeb(
-          download.body as import('node:stream/web').ReadableStream,
-        ),
-        new Transform({
-          transform(chunk: Buffer, _encoding, callback) {
-            fileBytes += chunk.length
-            completedBytes += chunk.length
-            if (fileBytes > file.size || completedBytes > totalBytes)
-              callback(new Error('Room pack file exceeds its advertised size'))
-            else {
+      const handle = await open(join(staging, file.name), 'wx')
+      try {
+        await handle.truncate(file.size)
+      } finally {
+        await handle.close()
+      }
+      for (let start = 0; start < file.size; start += RANGE_BYTES)
+        transfers.push({
+          name: file.name,
+          start,
+          end: Math.min(start + RANGE_BYTES, file.size) - 1,
+          size: file.size,
+        })
+    }
+    const controller = new AbortController()
+    let nextTransfer = 0
+    const transfer = async () => {
+      while (nextTransfer < transfers.length && !controller.signal.aborted) {
+        const part = transfers[nextTransfer++]
+        const download = await fetch(
+          `${baseUrl}/pack/file/${encodeURIComponent(part.name)}?${query}`,
+          {
+            redirect: 'error',
+            headers: { Range: `bytes=${part.start}-${part.end}` },
+            signal: controller.signal,
+          },
+        )
+        if (
+          download.status !== 206 ||
+          download.headers.get('content-range') !==
+            `bytes ${part.start}-${part.end}/${part.size}` ||
+          !download.body
+        )
+          throw new Error(`Could not download ${part.name} from the Host`)
+        let partBytes = 0
+        await pipeline(
+          Readable.fromWeb(
+            download.body as import('node:stream/web').ReadableStream,
+          ),
+          new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              partBytes += chunk.length
+              if (partBytes > part.end - part.start + 1)
+                return callback(
+                  new Error('Room pack file exceeds its advertised size'),
+                )
+              completedBytes += chunk.length
               if (
                 Date.now() - lastProgress >= 100 ||
                 completedBytes === totalBytes
@@ -112,14 +152,29 @@ export async function downloadRoomPack(
                 })
               }
               callback(null, chunk)
-            }
-          },
-        }),
-        createWriteStream(join(staging, file.name)),
-      )
-      if (fileBytes !== file.size)
-        throw new Error(`Incomplete download: ${file.name}`)
+            },
+          }),
+          createWriteStream(join(staging, part.name), {
+            flags: 'r+',
+            start: part.start,
+          }),
+          { signal: controller.signal },
+        )
+        if (partBytes !== part.end - part.start + 1)
+          throw new Error(`Incomplete download: ${part.name}`)
+      }
     }
+    const workers = Array.from(
+      { length: Math.min(TRANSFER_CONCURRENCY, transfers.length) },
+      () =>
+        transfer().catch((error: unknown) => {
+          controller.abort()
+          throw error
+        }),
+    )
+    const results = await Promise.allSettled(workers)
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
     const parsedPack = await readPackFolder(
       staging,
       'zip',

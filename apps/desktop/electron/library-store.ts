@@ -39,12 +39,27 @@ type Library = z.infer<typeof LibrarySchema>
 export class LibraryStore {
   private readonly file: string
   private queue: Promise<unknown> = Promise.resolve()
+  private cache: Library | null = null
+  private loading: Promise<Library> | null = null
 
   constructor(userData: string) {
     this.file = join(userData, 'library.json')
   }
 
   private async read(): Promise<Library> {
+    if (this.cache) return structuredClone(this.cache)
+    if (this.loading) return structuredClone(await this.loading)
+    this.loading = this.readFromDisk()
+    try {
+      const data = await this.loading
+      this.cache = data
+      return structuredClone(data)
+    } finally {
+      this.loading = null
+    }
+  }
+
+  private async readFromDisk(): Promise<Library> {
     try {
       return LibrarySchema.parse(JSON.parse(await readFile(this.file, 'utf8')))
     } catch (error) {
@@ -63,6 +78,7 @@ export class LibraryStore {
       await mkdir(dirname(this.file), { recursive: true })
       await writeFile(temp, JSON.stringify(data, null, 2), 'utf8')
       await rename(temp, this.file)
+      this.cache = structuredClone(data)
     } catch (error) {
       await rm(temp, { force: true })
       throw error

@@ -23,6 +23,7 @@ export function ConfirmDialog({
     if (!dialog) return
     if (dialog.showModal) dialog.showModal()
     else dialog.setAttribute('open', '')
+    dialog.focus()
     return () => {
       if (dialog.close && dialog.open) dialog.close()
       else dialog.removeAttribute('open')
@@ -32,19 +33,12 @@ export function ConfirmDialog({
   return (
     <dialog
       ref={dialogRef}
+      tabIndex={-1}
       aria-labelledby="confirm-dialog-title"
       aria-describedby="confirm-dialog-description"
       onCancel={(event) => {
         event.preventDefault()
         onCancel()
-      }}
-      onClick={(event) => {
-        if (event.target !== event.currentTarget) return
-        const bounds = event.currentTarget.getBoundingClientRect()
-        const { clientX, clientY } = event
-        if (clientX < bounds.left || clientX > bounds.right || clientY < bounds.top || clientY > bounds.bottom) {
-          onCancel()
-        }
       }}
       className="confirm-dialog border border-border bg-card p-6 text-foreground"
     >

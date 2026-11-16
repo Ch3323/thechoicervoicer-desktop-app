@@ -3,6 +3,7 @@ import { Check, RefreshCcw } from 'lucide-react'
 import type { UpdateStatus } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
+import { playerError } from '@/lib/player-error'
 
 function lastCheckedText(checkedAt?: string): string {
   if (!checkedAt) return 'Last checked: Not yet'
@@ -35,7 +36,7 @@ function detail(status: UpdateStatus, compact: boolean): string | null {
     case 'downloading': return `Downloading… ${status.percent ?? 0}%`
     case 'downloaded': return `Version ${status.version ?? 'new'} is ready. Install when you are ready.`
     case 'checking': return 'Looking for a newer version on GitHub…'
-    case 'error': return status.message ?? 'Try checking again.'
+    case 'error': return playerError(status.message, 'Could not check for updates. Check your connection, then try again.')
     case 'disabled': return compact
       ? 'Install a GitHub release to check.'
       : status.message?.includes('no update feed')
@@ -56,7 +57,7 @@ export function UpdateControls({ compact = false }: { compact?: boolean }) {
       setActionError(error instanceof Error ? error.message : String(error))
     }
   }
-  const description = actionError ?? detail(status, compact)
+  const description = actionError ? playerError(actionError, 'Could not complete the update. Please try again.') : detail(status, compact)
 
   return (
     <section aria-label="Updates" className={compact

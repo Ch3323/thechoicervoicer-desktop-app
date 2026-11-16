@@ -81,6 +81,22 @@ describe('Dub Pack parsing', () => {
     ])
   })
 
+  it('accepts alternate video extensions and rejects ambiguous videos', () => {
+    const dialogue = [
+      { path: '01_Line.wav' },
+      { path: '01_Line.ini', text: '[data]\ndub_timestamps=[1]' },
+    ]
+    expect(parse([{ path: 'dub_video.MP4' }, ...dialogue]).videoRef).toBe(
+      'dub_video.MP4',
+    )
+    expect(parse([{ path: 'dub_video.mkv' }, ...dialogue]).videoRef).toBe(
+      'dub_video.mkv',
+    )
+    expect(() =>
+      parse([{ path: 'dub_video.ogv' }, { path: 'dub_video.mp4' }, ...dialogue]),
+    ).toThrow('exactly one video')
+  })
+
   it('accepts cfg metadata and real-world author and subtitle text sidecars', () => {
     const pack = parse([
       { path: 'dub_video.ogv' },

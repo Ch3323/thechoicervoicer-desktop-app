@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   RECORDING_LEAD_IN_SECONDS,
@@ -13,6 +14,27 @@ import { recordingPath } from './recordings'
 
 const SAMPLE_RATE = 8000
 const MAX_SECONDS = 60
+const decodedCache = new Map<string, Promise<Float32Array>>()
+const MAX_CACHED_CLIPS = 16
+
+async function cachedAudio(path: string): Promise<Float32Array> {
+  const file = await stat(path)
+  const key = `${path}:${file.size}:${file.mtimeMs}`
+  const existing = decodedCache.get(key)
+  if (existing) {
+    decodedCache.delete(key)
+    decodedCache.set(key, existing)
+    return existing
+  }
+  const pending = decodeAudio(path).catch((error: unknown) => {
+    decodedCache.delete(key)
+    throw error
+  })
+  decodedCache.set(key, pending)
+  if (decodedCache.size > MAX_CACHED_CLIPS)
+    decodedCache.delete(decodedCache.keys().next().value!)
+  return pending
+}
 
 function decodeAudio(path: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
@@ -92,9 +114,9 @@ export async function getDialogueWaveform(
     dialogue.sourceRef,
   )
   const [sourceResult, takeResult] = await Promise.allSettled([
-    decodeAudio(sourcePath),
+    cachedAudio(sourcePath),
     selectedTake
-      ? decodeAudio(recordingPath(recordingRoot, selectedTake))
+      ? cachedAudio(recordingPath(recordingRoot, selectedTake))
       : Promise.resolve(null),
   ])
   if (sourceResult.status === 'rejected') throw sourceResult.reason

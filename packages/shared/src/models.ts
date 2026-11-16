@@ -139,6 +139,7 @@ export interface ExportOptions {
   useBackingTrack: boolean
   requireComplete: boolean
   backingVolume?: number
+  dubbingVolume?: number
   fastMode?: boolean
 }
 
@@ -150,6 +151,7 @@ export interface ExportProgress {
 
 export interface ExportResult {
   outputPath: string
+  destination?: 'local' | 'drive'
   backingTrackUsed: boolean
   warnings: string[]
 }

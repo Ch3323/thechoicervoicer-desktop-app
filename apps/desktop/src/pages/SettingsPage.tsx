@@ -1,11 +1,21 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Info, Moon } from 'lucide-react'
+import { ArrowLeft, Info, Moon, HardDrive } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { UpdateControls } from '@/components/UpdateControls'
+import { googleDriveExportsEnabled } from '@studio/shared'
 
 export function SettingsPage() {
   const [version, setVersion] = useState<string>('Loading…')
+  const [drive, setDrive] = useState<{
+    connected: boolean
+    folderId?: string
+    clientId?: string
+  } | null>(null)
+  const [clientId, setClientId] = useState('')
+  const [folder, setFolder] = useState('')
+  const [driveBusy, setDriveBusy] = useState(false)
+  const [driveError, setDriveError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -17,10 +27,47 @@ export function SettingsPage() {
         if (active) setVersion('Unavailable')
       },
     )
+    if (googleDriveExportsEnabled)
+      window.studio.getDriveStatus().then(
+        (value) => {
+          if (active) {
+            setDrive(value)
+            setClientId(value.clientId ?? '')
+          }
+        },
+        (error) => {
+          if (active) setDriveError(String(error))
+        },
+      )
     return () => {
       active = false
     }
   }, [])
+
+  async function connectDrive() {
+    setDriveBusy(true)
+    setDriveError('')
+    try {
+      setDrive(await window.studio.connectDrive(clientId, folder))
+    } catch (error) {
+      setDriveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDriveBusy(false)
+    }
+  }
+
+  async function disconnectDrive() {
+    setDriveBusy(true)
+    setDriveError('')
+    try {
+      await window.studio.disconnectDrive()
+      setDrive({ connected: false })
+    } catch (error) {
+      setDriveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDriveBusy(false)
+    }
+  }
 
   return (
     <div className="studio-app studio-inner-page min-h-screen bg-background text-foreground">
@@ -42,6 +89,76 @@ export function SettingsPage() {
           </p>
 
           <div className="mt-10 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
+            {googleDriveExportsEnabled && (
+              <div className="flex items-start gap-4 p-6">
+                <HardDrive
+                  className="mt-1 size-5 text-primary"
+                  aria-hidden="true"
+                />
+                <div className="flex-1 space-y-3">
+                  <h2 className="font-medium">
+                    Google Drive export destination
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    When connected, exported videos upload to this Drive folder
+                    automatically. The temporary render is removed after upload
+                    or failure.
+                  </p>
+                  {drive?.connected ? (
+                    <>
+                      <p className="text-sm">
+                        Connected to folder <code>{drive.folderId}</code>
+                      </p>
+                      <Button
+                        variant="secondary"
+                        disabled={driveBusy}
+                        onClick={() => void disconnectDrive()}
+                      >
+                        Disconnect
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <label className="block text-sm">
+                        Desktop OAuth client ID
+                        <input
+                          className="mt-1 w-full rounded-md border border-border bg-background p-2"
+                          value={clientId}
+                          onChange={(event) => setClientId(event.target.value)}
+                          placeholder="…apps.googleusercontent.com"
+                        />
+                      </label>
+                      <label className="block text-sm">
+                        Drive folder link or ID
+                        <input
+                          className="mt-1 w-full rounded-md border border-border bg-background p-2"
+                          value={folder}
+                          onChange={(event) => setFolder(event.target.value)}
+                          placeholder="https://drive.google.com/drive/folders/…"
+                        />
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        Create a Desktop OAuth client with Google Drive API
+                        enabled in Google Cloud. Sign-in opens your browser.
+                      </p>
+                      <Button
+                        disabled={
+                          driveBusy || !clientId.trim() || !folder.trim()
+                        }
+                        onClick={() => void connectDrive()}
+                      >
+                        {driveBusy ? 'Connecting…' : 'Connect Google Drive'}
+                      </Button>
+                    </>
+                  )}
+                  {driveError && (
+                    <p role="alert" className="text-sm text-red-300">
+                      {driveError}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-4 p-6">
               <Moon className="size-5 text-primary" aria-hidden="true" />
               <div className="flex-1">

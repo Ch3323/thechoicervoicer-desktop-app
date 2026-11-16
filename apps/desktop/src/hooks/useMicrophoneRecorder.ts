@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export interface CapturedTake {
@@ -169,7 +170,7 @@ export function useMicrophoneRecorder() {
       if (mountedRef.current)
         setDevices(available.filter((device) => device.kind === 'audioinput'))
     } catch (reason) {
-      if (mountedRef.current) setError(String(reason))
+      if (mountedRef.current) setError(playerError(reason))
     }
   }, [])
 
@@ -207,7 +208,7 @@ export function useMicrophoneRecorder() {
       void refreshDevices()
     } catch (reason) {
       stopTest()
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(playerError(reason))
     }
   }, [audioConstraints, refreshDevices, status, stopTest])
 
@@ -412,7 +413,7 @@ export function useMicrophoneRecorder() {
         cleanupHardware()
         recorderRef.current = null
         setStatus('idle')
-        setError(reason instanceof Error ? reason.message : String(reason))
+        setError(playerError(reason))
       }
     },
     [

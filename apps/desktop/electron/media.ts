@@ -4,7 +4,7 @@ import { protocol } from 'electron'
 import type { DubPack } from '@studio/shared'
 import { LibraryStore } from './library-store'
 import { packAssetFolder } from './pack-files'
-import { convertOgvToMp4 } from './preview-proxy'
+import { convertVideoToMp4 } from './preview-proxy'
 import { recordingPath } from './recordings'
 import { mediaFileResponse } from './media-response'
 
@@ -195,7 +195,7 @@ async function createPreview(
   await mkdir(previewRoot, { recursive: true })
   const temp = `${output}.tmp.mp4`
   try {
-    await convertOgvToMp4(source, temp)
+    await convertVideoToMp4(source, temp)
     await rm(output, { force: true })
     await rename(temp, output)
     return mediaUrl(pack.id, 'preview.mp4')

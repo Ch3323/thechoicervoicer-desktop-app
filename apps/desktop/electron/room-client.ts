@@ -231,7 +231,11 @@ export class RoomClient {
           'x-duration-seconds': String(input.durationSeconds),
           'x-offset-seconds': String(input.offsetSeconds ?? 0),
         },
-        body: Buffer.from(input.bytes),
+        body: Buffer.from(
+          input.bytes.buffer as ArrayBuffer,
+          input.bytes.byteOffset,
+          input.bytes.byteLength,
+        ),
       },
     )
     const result: unknown = await response.json()

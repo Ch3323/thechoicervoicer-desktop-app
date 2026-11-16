@@ -23,8 +23,8 @@ function runFfmpeg(args: string[]): Promise<void> {
   })
 }
 
-/** Creates a disposable browser-compatible preview. The OGV source is read only. */
-export function convertOgvToMp4(source: string, output: string): Promise<void> {
+/** Creates a disposable browser-compatible preview. The source is read only. */
+export function convertVideoToMp4(source: string, output: string): Promise<void> {
   return runFfmpeg([
     '-hide_banner',
     '-loglevel',
@@ -34,18 +34,15 @@ export function convertOgvToMp4(source: string, output: string): Promise<void> {
     source,
     '-map',
     '0:v:0',
-    '-map',
-    '0:a?',
+    '-an',
     '-c:v',
     'libx264',
     '-preset',
-    'veryfast',
+    'ultrafast',
     '-crf',
     '26',
     '-pix_fmt',
     'yuv420p',
-    '-c:a',
-    'aac',
     '-movflags',
     '+faststart',
     output,
@@ -53,7 +50,10 @@ export function convertOgvToMp4(source: string, output: string): Promise<void> {
 }
 
 /** Creates a disposable AAC backing track for browser playback. */
-export function convertAudioToM4a(source: string, output: string): Promise<void> {
+export function convertAudioToM4a(
+  source: string,
+  output: string,
+): Promise<void> {
   return runFfmpeg([
     '-hide_banner',
     '-loglevel',

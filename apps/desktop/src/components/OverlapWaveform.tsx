@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useEffect, useId, useMemo, useState } from 'react'
 import type { WaveformSnapshot } from '@studio/shared'
 
@@ -187,7 +188,7 @@ export function OverlapWaveform({
       )}
       {error && (
         <p role="alert" className="mt-2 text-xs text-amber-200">
-          Waveform unavailable: {error}
+          Waveform unavailable: {playerError(error)}
         </p>
       )}
       {snapshot?.warning && (

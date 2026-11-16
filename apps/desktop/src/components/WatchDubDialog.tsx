@@ -1,12 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { playerError } from '@/lib/player-error'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { DubPack, DubbingProject, ExportOptions } from '@studio/shared'
+import {
+  buildAudioTimeline,
+  type DubPack,
+  type DubbingProject,
+  type ExportOptions,
+  type RecordingTake,
+} from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { useBackingTrackPlayback } from '@/hooks/useBackingTrackPlayback'
+import { useDubbingTrackVolume } from '@/hooks/useDubbingTrackVolume'
 
 export function WatchDubDialog({
   project,
   pack,
+  takes,
   open,
   onClose,
   fastMode,
@@ -17,6 +26,7 @@ export function WatchDubDialog({
 }: {
   project: DubbingProject
   pack: DubPack
+  takes: readonly RecordingTake[]
   open: boolean
   onClose: () => void
   fastMode: boolean
@@ -27,9 +37,12 @@ export function WatchDubDialog({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const takeAudioRefs = useRef(new Map<string, HTMLAudioElement>())
+  const takeObjectUrlsRef = useRef<string[]>([])
   const operationRef = useRef(0)
   const closeRequestedRef = useRef(false)
   const [backingVolume, setBackingVolume] = useState(100)
+  const [dubbingVolume, setDubbingVolume] = useState(100)
   const [backingAsset, setBackingAsset] = useState<{
     key: string
     ref: string
@@ -42,24 +55,36 @@ export function WatchDubDialog({
       ? backingAsset.url
       : null
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [takeUrls, setTakeUrls] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const { backingAudioRef, syncBacking } = useBackingTrackPlayback(
+  const timeline = useMemo(
+    () => buildAudioTimeline(pack, project, takes),
+    [pack, project, takes],
+  )
+  const placements = timeline.placements
+  const { backingAudioRef, syncBacking, enableBoost } = useBackingTrackPlayback(
     backingUrl,
     backingVolume,
     videoRef,
     setError,
     open,
   )
+  const {
+    attachAudio: attachDubbingAudio,
+    enableBoost: enableDubbingBoost,
+    contextRef: dubbingContextRef,
+  } = useDubbingTrackVolume(takeAudioRefs, dubbingVolume, setError)
   const options: ExportOptions = {
     useBackingTrack: Boolean(pack.backingTrackRef),
     requireComplete: false,
     backingVolume: backingVolume / 100,
+    dubbingVolume: dubbingVolume / 100,
     fastMode,
   }
-  const cancelRender = () =>
+  const cancelExport = () =>
     mode === 'room'
       ? window.studio.roomCancelRender()
       : window.studio.cancelExport(project.id)
@@ -67,16 +92,20 @@ export function WatchDubDialog({
     if (closeRequestedRef.current) return
     closeRequestedRef.current = true
     operationRef.current += 1
-    void cancelRender()
+    videoRef.current?.pause()
+    for (const audio of takeAudioRefs.current.values()) audio.pause()
+    void cancelExport()
     onClose()
   }
 
   useEffect(() => {
     if (open) closeRequestedRef.current = false
     return () => {
+      for (const url of takeObjectUrlsRef.current) URL.revokeObjectURL(url)
+      takeObjectUrlsRef.current = []
       if (open && !closeRequestedRef.current) {
         operationRef.current += 1
-        void cancelRender()
+        void cancelExport()
       }
     }
     // Cancellation is tied to this opening, including parent unmounts.
@@ -91,9 +120,11 @@ export function WatchDubDialog({
         if (dialog.showModal) dialog.showModal()
         else dialog.setAttribute('open', '')
       }
+      dialog.focus()
     } else {
       videoRef.current?.pause()
       backingAudioRef.current?.pause()
+      for (const audio of takeAudioRefs.current.values()) audio.pause()
       if (dialog.close && dialog.open) dialog.close()
       else dialog.removeAttribute('open')
     }
@@ -142,23 +173,91 @@ export function WatchDubDialog({
     })
   }, [open, project.id, mode])
 
-  async function renderPreview() {
+  const syncTakes = useCallback(
+    (video: HTMLVideoElement) => {
+      if (dubbingVolume > 100 && dubbingContextRef.current?.state !== 'running')
+        enableDubbingBoost()
+      for (const placement of placements) {
+        const audio = takeAudioRefs.current.get(placement.takeId)
+        if (!audio) continue
+        const position =
+          video.currentTime -
+          placement.startSeconds +
+          placement.trimStartSeconds
+        const active =
+          position >= placement.trimStartSeconds &&
+          position < placement.durationSeconds &&
+          !video.paused &&
+          !video.seeking
+        if (!active) {
+          audio.pause()
+          continue
+        }
+        audio.playbackRate = video.playbackRate
+        if (Math.abs(audio.currentTime - position) > 0.08)
+          audio.currentTime = position
+        if (audio.paused) {
+          void audio
+            .play()
+            .catch((reason) =>
+              setError(
+                reason instanceof Error ? reason.message : String(reason),
+              ),
+            )
+        }
+      }
+    },
+    [dubbingVolume, dubbingContextRef, enableDubbingBoost, placements],
+  )
+
+  async function preparePreview() {
     const operation = ++operationRef.current
     videoRef.current?.pause()
     backingAudioRef.current?.pause()
+    for (const audio of takeAudioRefs.current.values()) audio.pause()
     setBusy(true)
     setError(null)
+    setPreviewUrl(null)
+    setTakeUrls({})
+    for (const url of takeObjectUrlsRef.current) URL.revokeObjectURL(url)
+    takeObjectUrlsRef.current = []
     setProgress(0)
-    setMessage('Rendering dub preview…')
+    setMessage('Preparing dub preview…')
     try {
-      const url =
+      const [url, sources] = await Promise.all([
         mode === 'room'
-          ? await window.studio.roomRenderPreview()
-          : await window.studio.renderDubPreview(project.id, {
-              ...options,
-              useBackingTrack: false,
-            })
-      if (operation === operationRef.current) setPreviewUrl(url)
+          ? window.studio.roomGetPreviewUrl()
+          : window.studio.getPreviewUrl(pack.id),
+        Promise.all(
+          placements.map(async (placement) => {
+            const effect = project.voiceEffects?.[placement.dialogueId]
+            const audio = await window.studio.getPreviewTakeAudio(
+              mode,
+              project.id,
+              placement.dialogueId,
+              placement.takeId,
+              effect,
+            )
+            return [placement.takeId, audio] as const
+          }),
+        ),
+      ])
+      const urls = sources.map(
+        ([takeId, audio]) =>
+          [
+            takeId,
+            URL.createObjectURL(
+              new Blob([new Uint8Array(audio.bytes)], {
+                type: audio.mimeType,
+              }),
+            ),
+          ] as const,
+      )
+      if (operation === operationRef.current) {
+        takeObjectUrlsRef.current = urls.map(([, source]) => source)
+        setTakeUrls(Object.fromEntries(urls))
+        setPreviewUrl(url)
+      } else for (const [, source] of urls) URL.revokeObjectURL(source)
     } catch (reason) {
       if (operation === operationRef.current)
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -174,13 +273,14 @@ export function WatchDubDialog({
     try {
       const result =
         mode === 'room'
-          ? await window.studio.roomExport({ ...options, fastMode: false })
-          : await window.studio.exportProject(project.id, {
-              ...options,
-              fastMode: false,
-            })
+          ? await window.studio.roomExport(options)
+          : await window.studio.exportProject(project.id, options)
       if (result && operation === operationRef.current)
-        setMessage(`Exported to ${result.outputPath}`)
+        setMessage(
+          result.destination === 'drive'
+            ? 'Uploaded to Google Drive'
+            : `Exported to ${result.outputPath}`,
+        )
     } catch (reason) {
       if (operation === operationRef.current)
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -191,66 +291,84 @@ export function WatchDubDialog({
 
   useEffect(() => {
     if (!open) return
-    const timer = window.setTimeout(() => void renderPreview(), 0)
+    const timer = window.setTimeout(() => void preparePreview(), 0)
     return () => window.clearTimeout(timer)
-    // Start one render per opening; further changes use the Render again button.
+    // Refresh the media sources when this opening or its content changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, contentVersion])
 
   return (
     <dialog
       ref={dialogRef}
+      tabIndex={-1}
       aria-label="Watch dub"
       onClose={close}
-      className="watch-dub-dialog border border-border bg-card p-5 text-foreground"
+      className="watch-dub-dialog border border-border bg-card p-4 text-foreground"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase text-primary">Final cut</p>
-          <h2 className="mt-1 text-xl font-black uppercase">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-baseline gap-3">
+          <span className="shrink-0 text-xs font-bold uppercase text-primary">
+            Final cut
+          </span>
+          <h2
+            className="truncate text-lg font-black uppercase"
+            title={pack.metadata.title}
+          >
             {pack.metadata.title}
           </h2>
         </div>
         <Button
           variant="outline"
           size="sm"
+          className="size-8 shrink-0 p-0"
           onClick={close}
           aria-label="Close watch dub"
         >
           <X aria-hidden="true" />
         </Button>
       </div>
-      <div className="mt-5 aspect-video overflow-hidden rounded bg-black">
-        {previewUrl && !busy ? (
+      <div className="mt-3 aspect-video overflow-hidden rounded bg-black">
+        {previewUrl ? (
           <video
             ref={videoRef}
             src={previewUrl}
+            muted
             controls
             playsInline
             className="h-full w-full object-contain"
-            onPlaying={(event) => syncBacking(event.currentTarget)}
-            onWaiting={() => backingAudioRef.current?.pause()}
-            onPause={() => backingAudioRef.current?.pause()}
-            onEnded={() => backingAudioRef.current?.pause()}
+            onPlaying={(event) => {
+              syncBacking(event.currentTarget)
+              syncTakes(event.currentTarget)
+            }}
+            onWaiting={() => {
+              backingAudioRef.current?.pause()
+              for (const audio of takeAudioRefs.current.values()) audio.pause()
+            }}
+            onPause={() => {
+              backingAudioRef.current?.pause()
+              for (const audio of takeAudioRefs.current.values()) audio.pause()
+            }}
+            onEnded={() => {
+              backingAudioRef.current?.pause()
+              for (const audio of takeAudioRefs.current.values()) audio.pause()
+            }}
             onSeeking={(event) => {
+              for (const audio of takeAudioRefs.current.values()) audio.pause()
               if (backingAudioRef.current)
                 backingAudioRef.current.currentTime =
                   event.currentTarget.currentTime
             }}
+            onSeeked={(event) => {
+              syncBacking(event.currentTarget)
+              syncTakes(event.currentTarget)
+            }}
             onRateChange={(event) => {
-              if (backingAudioRef.current)
-                backingAudioRef.current.playbackRate =
-                  event.currentTarget.playbackRate
+              syncBacking(event.currentTarget)
+              syncTakes(event.currentTarget)
             }}
             onTimeUpdate={(event) => {
-              const backing = backingAudioRef.current
-              if (
-                backing &&
-                Math.abs(
-                  backing.currentTime - event.currentTarget.currentTime,
-                ) > 0.2
-              )
-                backing.currentTime = event.currentTarget.currentTime
+              syncBacking(event.currentTarget)
+              syncTakes(event.currentTarget)
             }}
           />
         ) : (
@@ -267,6 +385,21 @@ export function WatchDubDialog({
           preload="auto"
         />
       )}
+      {placements.map((placement) => (
+        <audio
+          key={placement.takeId}
+          ref={(element) => {
+            if (element) {
+              takeAudioRefs.current.set(placement.takeId, element)
+              attachDubbingAudio(element)
+              if (!dubbingContextRef.current)
+                element.volume = Math.min(1, dubbingVolume / 100)
+            } else takeAudioRefs.current.delete(placement.takeId)
+          }}
+          src={takeUrls[placement.takeId]}
+          preload="none"
+        />
+      ))}
       {busy && (
         <progress
           value={progress}
@@ -276,44 +409,73 @@ export function WatchDubDialog({
       )}
       {error && (
         <p role="alert" className="mt-3 text-sm text-red-300">
-          {error}
+          {playerError(error)}
         </p>
       )}
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <p className="mr-auto text-xs text-muted-foreground">
-          {completedLines !== undefined && totalLines !== undefined
-            ? `${completedLines} of ${totalLines} lines recorded. Missing lines play silently.`
-            : pack.backingTrackRef
-              ? 'Your takes are mixed over the pack backing track.'
-              : 'Your takes are mixed with silent gaps.'}
+      {completedLines !== undefined && totalLines !== undefined && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {completedLines}/{totalLines} lines recorded
+          {completedLines < totalLines ? ' · Missing lines play silently.' : ''}
         </p>
-        {pack.backingTrackRef && (
-          <label className="flex items-center gap-2 text-xs">
-            Backing track{' '}
+      )}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {pack.backingTrackRef ? (
+            <label className="flex items-center gap-1.5 text-xs">
+              Backing{' '}
+              <input
+                aria-label="Backing track volume"
+                type="range"
+                min="0"
+                max="200"
+                step="5"
+                value={backingVolume}
+                onChange={(event) => {
+                  const volume = Number(event.target.value)
+                  if (volume > 100) enableBoost()
+                  setBackingVolume(volume)
+                }}
+                className="w-24 accent-primary"
+              />{' '}
+              {backingVolume}%
+            </label>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              No backing track
+            </span>
+          )}
+          <label className="flex items-center gap-1.5 text-xs">
+            Dubbing{' '}
             <input
-              aria-label="Backing track volume"
+              aria-label="Dubbing track volume"
               type="range"
               min="0"
               max="200"
               step="5"
-              value={backingVolume}
-              onChange={(event) => setBackingVolume(Number(event.target.value))}
-              className="w-28 accent-primary"
+              value={dubbingVolume}
+              onChange={(event) => {
+                const volume = Number(event.target.value)
+                if (volume > 100) enableDubbingBoost()
+                setDubbingVolume(volume)
+              }}
+              className="w-24 accent-primary"
             />{' '}
-            {backingVolume}%
+            {dubbingVolume}%
           </label>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void renderPreview()}
-          disabled={busy}
-        >
-          Re-render
-        </Button>
-        <Button size="sm" onClick={() => void exportVideo()} disabled={busy}>
-          Export video
-        </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void preparePreview()}
+            disabled={busy}
+          >
+            Refresh preview
+          </Button>
+          <Button size="sm" onClick={() => void exportVideo()} disabled={busy}>
+            Export video
+          </Button>
+        </div>
       </div>
     </dialog>
   )

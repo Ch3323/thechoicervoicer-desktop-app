@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { convertOgvToMp4, ffmpegExecutable } from '../../electron/preview-proxy'
+import { convertVideoToMp4, ffmpegExecutable } from '../../electron/preview-proxy'
 
 let root: string
 beforeEach(async () => {
@@ -41,13 +41,18 @@ describe('OGV preview proxy', () => {
       'lavfi',
       '-i',
       'color=c=red:s=160x90:d=1',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=1',
       '-c:v',
       'libtheora',
-      '-an',
+      '-c:a',
+      'libvorbis',
       source,
     ])
     const original = await readFile(source)
-    await convertOgvToMp4(source, preview)
+    await convertVideoToMp4(source, preview)
     expect(await readFile(source)).toEqual(original)
     const output = await readFile(preview)
     expect(output.length).toBeGreaterThan(1000)
@@ -62,5 +67,39 @@ describe('OGV preview proxy', () => {
       'null',
       '-',
     ])
+    await expect(
+      ffmpeg([
+        '-hide_banner',
+        '-i',
+        preview,
+        '-map',
+        '0:a:0',
+        '-f',
+        'null',
+        '-',
+      ]),
+    ).rejects.toThrow()
+  }, 30_000)
+
+  it('converts an MKV source to MP4', async () => {
+    const source = join(root, 'dub_video.mkv')
+    const preview = join(root, 'mkv-preview.mp4')
+    await ffmpeg([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=blue:s=160x90:d=1',
+      '-c:v',
+      'mpeg4',
+      source,
+    ])
+    const original = await readFile(source)
+    await convertVideoToMp4(source, preview)
+    expect(await readFile(source)).toEqual(original)
+    expect((await readFile(preview)).toString('ascii', 4, 8)).toBe('ftyp')
   }, 30_000)
 })

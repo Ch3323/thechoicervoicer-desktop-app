@@ -8,6 +8,9 @@ export * from './waveform'
 export * from './voice-presets'
 export * from './room'
 
+// Planned Google Drive destination remains disabled for the 1.1 release.
+export const googleDriveExportsEnabled = false
+
 import type {
   DubPack,
   DubbingProject,
@@ -24,6 +27,11 @@ export interface ImportProgress {
   phase: 'scanning' | 'extracting' | 'saving'
   completedBytes: number
   totalBytes: number
+}
+
+export interface PreviewTakeAudio {
+  bytes: Uint8Array
+  mimeType: string
 }
 
 export interface UpdateStatus {
@@ -43,6 +51,17 @@ export interface UpdateStatus {
 }
 
 export interface DesktopApi {
+  getDriveStatus(): Promise<{
+    connected: boolean
+    folderId?: string
+    clientId?: string
+  }>
+  connectDrive(
+    clientId: string,
+    folder: string,
+  ): Promise<{ connected: boolean; folderId?: string; clientId?: string }>
+  disconnectDrive(): Promise<void>
+  openDriveExport(url: string): Promise<void>
   getUpdateStatus(): Promise<UpdateStatus>
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void
   checkForUpdates(): Promise<void>
@@ -86,6 +105,13 @@ export interface DesktopApi {
   roomGetPreviewUrl(): Promise<string>
   roomGetAssetUrl(assetRef: string): Promise<string>
   roomGetBackingTrackBytes(): Promise<Uint8Array>
+  getPreviewTakeAudio(
+    mode: 'single' | 'room',
+    projectId: string,
+    dialogueId: string,
+    takeId: string,
+    effect?: VoiceEffect,
+  ): Promise<PreviewTakeAudio>
   roomGetTakeUrl(takeId: string): Promise<string>
   roomGetEffectTakeUrl(
     dialogueId: string,

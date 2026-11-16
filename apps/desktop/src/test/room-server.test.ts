@@ -17,7 +17,10 @@ import { buildAudioTimeline, roomPackForLocalAssets } from '@studio/shared'
 import { exportProject } from '../../electron/export'
 import { LibraryStore } from '../../electron/library-store'
 import { importFolder } from '../../electron/pack-files'
-import { convertOgvToMp4, ffmpegExecutable } from '../../electron/preview-proxy'
+import {
+  convertVideoToMp4,
+  ffmpegExecutable,
+} from '../../electron/preview-proxy'
 import { backingPreviewBytes } from '../../electron/backing-preview'
 import { RoomClient, parseLanAddress } from '../../electron/room-client'
 import { startRoomServer } from '../../electron/room-server'
@@ -25,6 +28,7 @@ import { packFingerprint } from '../../electron/pack-fingerprint'
 import { discoverRooms } from '../../electron/room-discovery'
 import { downloadRoomPack } from '../../electron/room-pack-download'
 import { recordingPath } from '../../electron/recordings'
+import { roomPreviewTakeAudio } from '../../electron/preview-take'
 
 let root = ''
 let stopRoom: (() => Promise<void>) | null = null
@@ -170,7 +174,7 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
     port,
     createPreview: async (packToPreview) => {
       await mkdir(previewStorage, { recursive: true })
-      await convertOgvToMp4(
+      await convertVideoToMp4(
         join(folder, packToPreview.videoRef),
         join(previewStorage, `${packToPreview.id}.mp4`),
       )
@@ -195,6 +199,17 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
   }
   const host = await makeClient('Host', server.hostSecret)
   await host.client.request('room:pack', pack.id)
+  const rangedPackFile = await fetch(
+    `http://127.0.0.1:${port}/pack/file/dub_video.ogv?code=${server.code}`,
+    { headers: { Range: 'bytes=0-31' } },
+  )
+  expect(rangedPackFile.status).toBe(206)
+  expect(rangedPackFile.headers.get('content-range')).toMatch(
+    /^bytes 0-31\/\d+$/,
+  )
+  expect(Buffer.from(await rangedPackFile.arrayBuffer())).toEqual(
+    (await readFile(join(folder, 'dub_video.ogv'))).subarray(0, 32),
+  )
   const nameCheck = await fetch(
     `http://127.0.0.1:${port}/room/join-info?code=${server.code}&name=${encodeURIComponent('  hOsT  ')}`,
   )
@@ -488,6 +503,15 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
   expect(effected.status).toBe(200)
   expect(effected.headers.get('content-type')).toContain('audio/mp4')
   expect((await effected.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  const roomAudio = await roomPreviewTakeAudio(
+    alice.client,
+    roomProject!.id,
+    aliceLine.id,
+    first.id,
+    effect,
+  )
+  expect(roomAudio.mimeType).toBe('audio/mp4')
+  expect(roomAudio.bytes.byteLength).toBeGreaterThan(0)
   const originalPreview = new URL(
     alice.client.mediaUrl(
       `/media/effect/${encodeURIComponent(aliceLine.id)}/${first.id}`,

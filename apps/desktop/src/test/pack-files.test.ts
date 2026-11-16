@@ -77,4 +77,20 @@ describe('folder and ZIP adapters', () => {
     )
     await expect(importZip(unsafe, join(root, 'storage'))).rejects.toThrow()
   })
+
+  it('imports a ZIP with an alternate video extension', async () => {
+    const archive = join(root, 'alternate.zip')
+    await writeFile(
+      archive,
+      zipSync({
+        'dub_video.webm': strToU8('video'),
+        '01_Test.wav': strToU8('audio'),
+        '01_Test.ini': strToU8('[data]\ndub_timestamps=[2]'),
+      }),
+    )
+    const pack = await importZip(archive, join(root, 'storage'))
+    expect(pack.videoRef).toBe('dub_video.webm')
+    expect(await readFile(join(root, 'storage', pack.id, pack.videoRef), 'utf8'))
+      .toBe('video')
+  })
 })

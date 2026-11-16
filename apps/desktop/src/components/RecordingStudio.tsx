@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
@@ -265,6 +266,7 @@ export function RecordingStudio({
     if (!dialog) return
     if (dialog.showModal) dialog.showModal()
     else dialog.setAttribute('open', '')
+    dialog.focus()
   }
 
   function closeSettings() {
@@ -469,6 +471,7 @@ export function RecordingStudio({
 
       <dialog
         ref={settingsRef}
+        tabIndex={-1}
         aria-label="Microphone settings"
         className="microphone-dialog rounded-2xl border border-border bg-card p-0 text-foreground"
       >
@@ -675,7 +678,7 @@ export function RecordingStudio({
       )}
       {(recorder.error || error) && (
         <p role="alert" className="mt-4 text-sm text-red-300">
-          {recorder.error || error}
+          {playerError(recorder.error || error)}
         </p>
       )}
     </section>

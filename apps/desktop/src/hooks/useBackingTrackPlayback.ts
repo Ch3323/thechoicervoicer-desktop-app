@@ -10,61 +10,78 @@ export function useBackingTrackPlayback(
   const backingAudioRef = useRef<HTMLAudioElement>(null)
   const backingContextRef = useRef<AudioContext | null>(null)
   const backingGainRef = useRef<GainNode | null>(null)
+  const connectedAudioRef = useRef<HTMLAudioElement | null>(null)
+
+  const enableBoost = useCallback(() => {
+    const audio = backingAudioRef.current
+    if (!audio || typeof AudioContext === 'undefined') return
+    if (connectedAudioRef.current === audio) {
+      void backingContextRef.current?.resume().catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      return
+    }
+    try {
+      const context = new AudioContext()
+      const source = context.createMediaElementSource(audio)
+      const gain = context.createGain()
+      source.connect(gain)
+      gain.connect(context.destination)
+      backingContextRef.current = context
+      backingGainRef.current = gain
+      connectedAudioRef.current = audio
+      gain.gain.value = volume / 100
+      void context.resume().catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [setError, volume])
 
   const syncBacking = useCallback(
     (video: HTMLVideoElement) => {
       const audio = backingAudioRef.current
       if (!audio) return
-      audio.playbackRate = video.playbackRate
-      void (async () => {
-        if (backingContextRef.current) await backingContextRef.current.resume()
-        if (video.paused || backingAudioRef.current !== audio) return
-        audio.currentTime = video.currentTime
-        await audio.play()
-      })().catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      )
-    },
-    [setError],
-  )
-
-  useEffect(() => {
-    const audio = backingAudioRef.current
-    if (!enabled || !audio || typeof AudioContext === 'undefined') return
-    let context: AudioContext | null = null
-    try {
-      context = new AudioContext()
-      const activeContext = context
-      const source = activeContext.createMediaElementSource(audio)
-      const gain = activeContext.createGain()
-      source.connect(gain)
-      gain.connect(activeContext.destination)
-      backingContextRef.current = activeContext
-      backingGainRef.current = gain
-      return () => {
+      if (video.paused || video.seeking || video.ended) {
         audio.pause()
-        source.disconnect()
-        gain.disconnect()
-        backingContextRef.current = null
-        backingGainRef.current = null
-        void activeContext.close()
+        return
       }
-    } catch {
-      if (context) void context.close()
-    }
-  }, [backingUrl, enabled])
+      if (volume > 100) enableBoost()
+      else if (backingContextRef.current)
+        void backingContextRef.current.resume().catch((reason) =>
+          setError(reason instanceof Error ? reason.message : String(reason)),
+        )
+      audio.playbackRate = video.playbackRate
+      if (Math.abs(audio.currentTime - video.currentTime) > 0.08)
+        audio.currentTime = video.currentTime
+      if (audio.paused)
+        void audio.play().catch((reason) =>
+          setError(reason instanceof Error ? reason.message : String(reason)),
+        )
+    },
+    [enableBoost, setError, volume],
+  )
 
   useEffect(() => {
     const gain = backingGainRef.current
     if (gain) gain.gain.value = volume / 100
     else if (backingAudioRef.current)
       backingAudioRef.current.volume = Math.min(1, volume / 100)
-  }, [volume, backingUrl, enabled])
+  }, [volume, backingUrl])
 
   useEffect(() => {
     const video = videoRef.current
     if (enabled && backingUrl && video && !video.paused) syncBacking(video)
   }, [backingUrl, enabled, syncBacking, videoRef])
 
-  return { backingAudioRef, syncBacking }
+  useEffect(() => () => {
+    backingAudioRef.current?.pause()
+    void backingContextRef.current?.close()
+    backingContextRef.current = null
+    backingGainRef.current = null
+    connectedAudioRef.current = null
+  }, [backingUrl])
+
+  return { backingAudioRef, syncBacking, enableBoost }
 }

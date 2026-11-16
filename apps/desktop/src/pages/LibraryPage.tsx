@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Archive, Trash2, Users } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -122,7 +123,7 @@ export function LibraryPage() {
               role="alert"
               className="mt-5 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
             >
-              {error}
+              {playerError(error)}
             </p>
           )}
 

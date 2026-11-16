@@ -93,6 +93,7 @@ export function buildFilterGraph(
   backingTrackUsed: boolean,
   backingVolume = 1,
   effects: Record<string, VoiceEffect> = {},
+  dubbingVolume = 1,
 ): string {
   const fixedDuration = duration.toFixed(3)
   const lines: string[] = []
@@ -110,7 +111,7 @@ export function buildFilterGraph(
     const delayMs = Math.round(placement.startSeconds * 1000)
     const filters = voiceEffectFilters(effects[placement.dialogueId])
     lines.push(
-      `[${firstTakeInput + index}:a:0]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${placement.trimStartSeconds.toFixed(3)}:end=${placement.durationSeconds.toFixed(3)},asetpts=PTS-STARTPTS,${filters.length ? `${filters.join(',')},` : ''}adelay=${delayMs}:all=1[t${index}]`,
+      `[${firstTakeInput + index}:a:0]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${placement.trimStartSeconds.toFixed(3)}:end=${placement.durationSeconds.toFixed(3)},asetpts=PTS-STARTPTS,${filters.length ? `${filters.join(',')},` : ''}${dubbingVolume === 1 ? '' : `volume=${dubbingVolume.toFixed(2)},`}adelay=${delayMs}:all=1[t${index}]`,
     )
   })
   if (timeline.placements.length === 0) {
@@ -194,6 +195,7 @@ export async function exportProject(
         backing !== null,
         options.backingVolume ?? 1,
         project.voiceEffects ?? {},
+        options.dubbingVolume ?? 1,
       ),
       'utf8',
     )
@@ -213,7 +215,7 @@ export async function exportProject(
       '-c:v',
       'libx264',
       '-preset',
-      options.fastMode ? 'ultrafast' : 'medium',
+      options.fastMode ? 'ultrafast' : 'veryfast',
       '-crf',
       options.fastMode ? '26' : '20',
       '-pix_fmt',

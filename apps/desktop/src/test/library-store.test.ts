@@ -31,6 +31,9 @@ describe('local pack library', () => {
     })
     const store = new LibraryStore(root)
     await store.savePack(pack)
+    const listed = await store.listPacks()
+    listed[0].metadata.title = 'Changed only in caller'
+    expect((await store.listPacks())[0].metadata.title).toBe('Scene')
     const project = await store.createProject(pack.id)
     const updated = await store.updateRoles(project.id, [
       pack.characters[1].id,

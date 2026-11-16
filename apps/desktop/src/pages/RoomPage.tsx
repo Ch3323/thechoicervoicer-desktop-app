@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -237,6 +238,7 @@ export function RoomPage({
     if (!dialog) return
     if (typeof dialog.showModal === 'function') dialog.showModal()
     else dialog.setAttribute('open', '')
+    dialog.focus()
     return () => {
       if (typeof dialog.close === 'function' && dialog.open) dialog.close()
     }
@@ -248,6 +250,7 @@ export function RoomPage({
     if (!dialog) return
     if (typeof dialog.showModal === 'function') dialog.showModal()
     else dialog.setAttribute('open', '')
+    dialog.focus()
     return () => {
       if (typeof dialog.close === 'function' && dialog.open) dialog.close()
     }
@@ -681,12 +684,13 @@ export function RoomPage({
             role="alert"
             className="rounded-lg border border-red-500 p-3 text-red-200"
           >
-            {error}
+            {playerError(error)}
           </p>
         )}
         {!info && joinTarget && roomModalOpen ? (
           <dialog
             ref={joinRolesDialogRef}
+            tabIndex={-1}
             className="multiplayer-panel multiplayer-setup-dialog multiplayer-join-roles-dialog"
             aria-label="Choose available roles"
             onCancel={(event) => {
@@ -708,7 +712,7 @@ export function RoomPage({
             </div>
             {error && (
               <p role="alert" className="mt-3 text-sm text-red-300">
-                {error}
+                {playerError(error)}
               </p>
             )}
             <div className="multiplayer-form">
@@ -820,6 +824,7 @@ export function RoomPage({
         ) : !info && roomModalOpen ? (
           <dialog
             ref={setupDialogRef}
+            tabIndex={-1}
             className="multiplayer-panel multiplayer-setup-dialog"
             aria-label="Multiplayer mode"
             onCancel={(event) => {
@@ -839,7 +844,7 @@ export function RoomPage({
             </div>
             {error && (
               <p role="alert" className="mt-3 text-sm text-red-300">
-                {error}
+                {playerError(error)}
               </p>
             )}
             <div
@@ -1095,6 +1100,7 @@ export function RoomPage({
         ) : state && roomModalOpen ? (
           <dialog
             ref={lobbyDialogRef}
+            tabIndex={-1}
             className="multiplayer-panel multiplayer-lobby multiplayer-setup-dialog"
             aria-label="Room lobby"
             onCancel={(event) => {
@@ -1118,7 +1124,7 @@ export function RoomPage({
             </div>
             {error && (
               <p role="alert" className="mt-3 text-sm text-red-300">
-                {error}
+                {playerError(error)}
               </p>
             )}
             <p className="multiplayer-lobby-message">
@@ -1736,6 +1742,7 @@ export function RoomPage({
                   <WatchDubDialog
                     project={state.project}
                     pack={state.pack}
+                    takes={state.takes}
                     open={watchOpen}
                     onClose={() => setWatchOpen(false)}
                     fastMode={false}
@@ -1763,6 +1770,7 @@ export function RoomPage({
       {canShowRolePicker && info && state?.pack && (
         <dialog
           ref={rolePickerRef}
+          tabIndex={-1}
           className="multiplayer-panel multiplayer-setup-dialog"
           aria-label="Choose roles"
           onCancel={(event) => {
@@ -1782,7 +1790,7 @@ export function RoomPage({
           </div>
           {error && (
             <p role="alert" className="mt-3 text-sm text-red-300">
-              {error}
+              {playerError(error)}
             </p>
           )}
           <div className="multiplayer-form">

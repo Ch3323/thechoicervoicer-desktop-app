@@ -7,6 +7,7 @@ import Fastify from 'fastify'
 import { Server as SocketServer, type Socket } from 'socket.io'
 import {
   canRecordDialogue,
+  isPackFileName,
   DisplayNameSchema,
   RoomJoinInfoSchema,
   RoomCodeSchema,
@@ -28,7 +29,6 @@ import { announceRoom } from './room-discovery'
 
 const MAX_UPLOAD = 100 * 1024 * 1024
 const MAX_PACK_BYTES = 8 * 1024 * 1024 * 1024
-const packFileName = /^[^/\\]+\.(ogv|mp3|ogg|wav|m4a|ini|cfg|txt|png|jpe?g)$/i
 const IdSchema = z.string().min(1).max(1024)
 const roomNameKey = (name: string) =>
   name.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase()
@@ -549,7 +549,7 @@ export async function startRoomServer(options: RoomServerOptions) {
       const entries = await readdir(folder, { withFileTypes: true })
       const files = await Promise.all(
         entries
-          .filter((entry) => entry.isFile() && packFileName.test(entry.name))
+          .filter((entry) => entry.isFile() && isPackFileName(entry.name))
           .map(async (entry) => ({
             name: entry.name,
             size: (await lstat(join(folder, entry.name))).size,
@@ -574,11 +574,16 @@ export async function startRoomServer(options: RoomServerOptions) {
       const { folder } = await sharedPack(request.query)
       const name = z
         .string()
-        .regex(packFileName)
+        .refine(isPackFileName)
         .parse((request.params as { name: string }).name)
       const path = join(folder, name)
       if (!(await lstat(path)).isFile()) return reply.code(404).send()
-      return sendMedia(reply, path, undefined, 'application/octet-stream')
+      return sendMedia(
+        reply,
+        path,
+        request.headers.range,
+        'application/octet-stream',
+      )
     } catch {
       return reply.code(404).send()
     }

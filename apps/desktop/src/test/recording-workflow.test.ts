@@ -1,12 +1,24 @@
 // @vitest-environment node
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildAudioTimeline } from '@studio/shared'
-import { exportProject, parseDuration } from '../../electron/export'
+import {
+  buildFilterGraph,
+  exportProject,
+  parseDuration,
+} from '../../electron/export'
 import { effectTakeUrl } from '../../electron/effect-preview'
+import { localPreviewTakeAudio } from '../../electron/preview-take'
 import { LibraryStore } from '../../electron/library-store'
 import { importFolder } from '../../electron/pack-files'
 import { ffmpegExecutable } from '../../electron/preview-proxy'
@@ -160,10 +172,42 @@ describe('single-player persistence and export', () => {
       selected: true,
       offsetSeconds: 0.15,
     })
+    const rawPreview = await localPreviewTakeAudio(
+      reopened,
+      recordings,
+      join(userData, 'effect-previews'),
+      project.id,
+      pack.dialogues[0].id,
+      second.id,
+    )
+    expect(rawPreview.mimeType).toBe('audio/webm')
+    expect(rawPreview.bytes).toEqual(
+      new Uint8Array(await readFile(join(root, 'retake.webm'))),
+    )
+    await expect(
+      localPreviewTakeAudio(
+        reopened,
+        recordings,
+        join(userData, 'effect-previews'),
+        project.id,
+        pack.dialogues[0].id,
+        first.id,
+      ),
+    ).rejects.toThrow('Selected recording not found')
     expect(
       buildAudioTimeline(pack, savedProject, savedTakes).placements[0]
         .startSeconds,
     ).toBeCloseTo(0.65)
+    expect(
+      buildFilterGraph(
+        buildAudioTimeline(pack, savedProject, savedTakes),
+        sourceDuration,
+        true,
+        0.5,
+        savedProject.voiceEffects ?? {},
+        1.5,
+      ),
+    ).toContain('volume=1.50,adelay=650:all=1')
 
     const waveform = await getDialogueWaveform(
       reopened,
@@ -214,6 +258,27 @@ describe('single-player persistence and export', () => {
       effectUrl.split('/').at(-1)!,
     )
     expect(await inspect(auditionFile)).toContain('Audio: aac')
+    const effectPreview = await localPreviewTakeAudio(
+      reopened,
+      recordings,
+      join(userData, 'effect-previews'),
+      project.id,
+      pack.dialogues[0].id,
+      second.id,
+      {
+        preset: 'robot',
+        pitch: 2,
+        tone: 10,
+        texture: 30,
+        space: 10,
+        echo: 10,
+        mod: 10,
+      },
+    )
+    expect(effectPreview.mimeType).toBe('audio/mp4')
+    expect(effectPreview.bytes).toEqual(
+      new Uint8Array(await readFile(auditionFile)),
+    )
     const previewPath = join(root, 'preview.mp4')
     await exportProject(
       reopened,
@@ -286,7 +351,9 @@ describe('single-player persistence and export', () => {
       ),
     ).rejects.toThrow()
     expect(await readdir(root)).not.toContain('canceled.mp4')
-    expect((await readdir(root)).some((name) => name.includes('canceled.mp4.'))).toBe(false)
+    expect(
+      (await readdir(root)).some((name) => name.includes('canceled.mp4.')),
+    ).toBe(false)
   }, 60_000)
 
   it('blocks an incomplete project when the complete-only option is enabled', async () => {

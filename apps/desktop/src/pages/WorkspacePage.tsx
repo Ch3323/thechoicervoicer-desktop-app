@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ListFilter, X } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
@@ -14,6 +15,7 @@ import {
   type VoiceEffect,
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
+import { BrandLockup } from '@/components/BrandLockup'
 import { Switch } from '@/components/ui/switch'
 import { RecordingStudio } from '@/components/RecordingStudio'
 import { OverlapWaveform } from '@/components/OverlapWaveform'
@@ -585,6 +587,7 @@ export function WorkspacePage({
     const dialog = rolesDialogRef.current
     if (dialog?.showModal) dialog.showModal()
     else dialog?.setAttribute('open', '')
+    dialog?.focus()
   }
 
   function closeRoles() {
@@ -612,7 +615,8 @@ export function WorkspacePage({
               </Link>
             </Button>
             <span className="workspace-brand">
-              CHOICER <strong>VOICER</strong> STUDIO <span>/ NOW DUBBING</span>
+              <BrandLockup compact />
+              <span>/ NOW DUBBING</span>
             </span>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">
@@ -626,7 +630,7 @@ export function WorkspacePage({
             role="alert"
             className="mt-5 rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
           >
-            {error}
+            {playerError(error)}
           </p>
         )}
         {!pack || !project ? (
@@ -723,7 +727,7 @@ export function WorkspacePage({
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                        {previewError ??
+                        {(previewError ? playerError(previewError) : null) ??
                           'Preparing an MP4 preview from the source OGV…'}
                       </div>
                     )}
@@ -813,7 +817,7 @@ export function WorkspacePage({
                   )}
                   {previewError && previewUrl && (
                     <p role="alert" className="px-5 pb-3 text-sm text-red-300">
-                      {previewError}
+                      {playerError(previewError)}
                     </p>
                   )}
                 </section>
@@ -1082,7 +1086,7 @@ export function WorkspacePage({
                         'Fast mode',
                         fastMode,
                         setFastMode,
-                        'Faster dub preview render',
+                        'Faster video export',
                       ],
                     ] as const
                   ).map(([label, checked, change, description]) => (
@@ -1106,6 +1110,7 @@ export function WorkspacePage({
                 </div>
                 <dialog
                   ref={rolesDialogRef}
+                  tabIndex={-1}
                   aria-label="Choose roles"
                   className="roles-dialog rounded-2xl border border-border bg-card p-6 text-foreground"
                 >
@@ -1191,6 +1196,7 @@ export function WorkspacePage({
             <WatchDubDialog
               project={project}
               pack={pack}
+              takes={takes}
               open={watchOpen}
               onClose={() => setWatchOpen(false)}
               fastMode={fastMode}

@@ -1,3 +1,4 @@
+import { playerError } from '@/lib/player-error'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -56,7 +57,7 @@ export function ProjectsPage() {
           </p>
           {error && (
             <p role="alert" className="mt-6 text-red-200">
-              {error}
+              {playerError(error)}
             </p>
           )}
           {projects.length === 0 && (

@@ -115,16 +115,28 @@ function stableNameId(name: string): string {
   return `character:${name.toLocaleLowerCase()}`
 }
 
+/** The video codec is checked by FFmpeg when the preview is generated. */
+export function isPackVideoFileName(name: string): boolean {
+  return /^dub_video\.[a-z0-9][a-z0-9_-]*$/i.test(name) &&
+    !/\.(mp3|ogg|wav|m4a|ini|cfg|txt|png|jpe?g)$/i.test(name)
+}
+
+export function isPackFileName(name: string): boolean {
+  return /^[^/\\]+\.(mp3|ogg|wav|m4a|ini|cfg|txt|png|jpe?g)$/i.test(name) ||
+    isPackVideoFileName(name)
+}
+
 export function parseDubPack(input: PackParseInput): DubPack {
   const files = input.files.filter(
     (file) => !file.path.includes('/') && !file.path.includes('\\'),
   )
   const byLower = new Map(files.map((file) => [file.path.toLowerCase(), file]))
-  const video = byLower.get('dub_video.ogv')
-  if (!video)
+  const videos = files.filter((file) => isPackVideoFileName(file.path))
+  if (videos.length !== 1)
     throw new PackValidationError(
-      'This folder is not a Dub Pack: dub_video.ogv is missing.',
+      'A Dub Pack must contain exactly one video named dub_video.<extension>.',
     )
+  const video = videos[0]
 
   const findAsset = (
     base: string,

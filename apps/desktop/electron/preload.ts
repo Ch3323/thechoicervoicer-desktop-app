@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { DesktopApi } from '@studio/shared'
 
 const api: DesktopApi = {
+  getDriveStatus: () => ipcRenderer.invoke('drive:status'),
+  connectDrive: (clientId, folder) =>
+    ipcRenderer.invoke('drive:connect', clientId, folder),
+  disconnectDrive: () => ipcRenderer.invoke('drive:disconnect'),
+  openDriveExport: (url) => ipcRenderer.invoke('drive:open-export', url),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   onUpdateStatus: (callback) => {
     const listener = (
@@ -56,6 +61,15 @@ const api: DesktopApi = {
   roomGetPreviewUrl: () => ipcRenderer.invoke('room:preview'),
   roomGetAssetUrl: (assetRef) => ipcRenderer.invoke('room:asset', assetRef),
   roomGetBackingTrackBytes: () => ipcRenderer.invoke('room:backing-bytes'),
+  getPreviewTakeAudio: (mode, projectId, dialogueId, takeId, effect) =>
+    ipcRenderer.invoke(
+      'recordings:preview-audio',
+      mode,
+      projectId,
+      dialogueId,
+      takeId,
+      effect,
+    ),
   roomGetTakeUrl: (takeId) => ipcRenderer.invoke('room:take-url', takeId),
   roomGetEffectTakeUrl: (dialogueId, takeId, effect) =>
     ipcRenderer.invoke('room:effect-take-url', dialogueId, takeId, effect),
