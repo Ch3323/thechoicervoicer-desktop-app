@@ -1259,6 +1259,7 @@ a {
   line-height: 1.5;
 }
 .home-pack-card {
+  display: flex;
   margin-bottom: 7px;
   border: 1px solid #30494b;
   background: #0b1819;
@@ -1269,9 +1270,10 @@ a {
 }
 .home-pack-open {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 11px;
-  width: 100%;
+  min-width: 0;
   min-height: 69px;
   padding: 10px;
   text-align: left;
@@ -1288,9 +1290,15 @@ a {
 }
 .home-pack-copy {
   display: flex;
-  flex-direction: column;
+  width: 100%;
+  justify-content: space-between;
+  align-items: flex-end;
   gap: 5px;
   min-width: 0;
+}
+.home-pack-copy div {
+  max-width: 70%;
+  width: 100%;
 }
 .home-pack-copy strong {
   display: -webkit-box;
@@ -1301,38 +1309,46 @@ a {
   line-height: 1.2;
 }
 .home-pack-copy small {
+  max-width: 30%;
+  width: 100%;
   color: #97afae;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10px;
 }
-.home-pack-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 10px;
-  padding: 0 0 9px 55px;
-}
-.home-pack-actions button:first-child {
-  padding: 5px 9px;
-  border: 1px solid #3b696c;
-  color: #17d8e7;
-  font-size: 10px;
-  font-weight: 900;
-}
-.home-pack-actions span {
-  margin-left: auto;
-  color: #91aaa9;
-  font-size: 10px;
-}
-.home-pack-actions button:last-child {
+.home-pack-delete {
+  padding: 0 9px;
   color: #91aaa9;
 }
-.home-pack-actions button:last-child:hover,
+.home-pack-delete:hover,
 .home-recording-row button:last-child:hover {
   color: #fda4a4;
 }
-.home-pack-actions svg,
+.home-pack-delete svg,
 .home-recording-row svg {
   width: 15px;
+}
+.home-pack-context-menu {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  min-width: 194px;
+  padding: 4px;
+  border: 1px solid #3b696c;
+  background: #0b1819;
+  box-shadow: 0 10px 24px #0009;
+}
+.home-pack-context-menu button {
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 11px;
+}
+.home-pack-context-menu button:hover,
+.home-pack-context-menu button:focus-visible {
+  background: #14292b;
+  color: #16d7e7;
 }
 .home-recordings {
   padding-top: 4px;

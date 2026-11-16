@@ -1,7 +1,7 @@
 {
   "name": "@studio/desktop",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "The Choicer Voicer At Home desktop app",
   "author": "Tapitti",
   "main": "./out/main/main.js",

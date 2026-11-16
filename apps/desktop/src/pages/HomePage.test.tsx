@@ -45,6 +45,17 @@ const project: DubbingProject = {
   updatedAt: '2026-01-01T00:00:00.000Z',
   enabledCharacterIds: [pack.characters[0].id],
 }
+const take: RecordingTake = {
+  id: '00000000-0000-4000-8000-000000000002',
+  projectId: project.id,
+  dialogueId: pack.dialogues[0].id,
+  fileRef: '00000000-0000-4000-8000-000000000002.webm',
+  mimeType: 'audio/webm',
+  durationSeconds: 1,
+  offsetSeconds: 0,
+  createdAt: project.createdAt,
+  selected: true,
+}
 
 afterEach(() => {
   cleanup()
@@ -305,7 +316,9 @@ describe('HomePage', () => {
     expect(screen.getByText('YOUR SCENE STARTS HERE')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Imported packs' })).toBeNull()
     expect(screen.getByText('Update available')).toBeInTheDocument()
-    expect(screen.getByText(/Version 1\.2\.4 is ready to download/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Version 1\.2\.4 is ready to download/),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
     expect(checkForUpdates).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('button', { name: 'Download' }))
@@ -316,17 +329,6 @@ describe('HomePage', () => {
   })
 
   it('shows recording artwork and progress from selected takes', async () => {
-    const take: RecordingTake = {
-      id: '00000000-0000-4000-8000-000000000002',
-      projectId: project.id,
-      dialogueId: pack.dialogues[0].id,
-      fileRef: '00000000-0000-4000-8000-000000000002.webm',
-      mimeType: 'audio/webm',
-      durationSeconds: 1,
-      offsetSeconds: 0,
-      createdAt: project.createdAt,
-      selected: true,
-    }
     window.studio = {
       listPacks: async () => [pack],
       listProjects: async () => [project],
@@ -345,6 +347,101 @@ describe('HomePage', () => {
         name: `Recording progress for ${pack.metadata.title}`,
       }),
     ).toHaveAttribute('aria-valuenow', '1')
+  })
+
+  it('keeps an empty draft out of recording history', async () => {
+    window.studio = {
+      listPacks: async () => [pack],
+      listProjects: async () => [project],
+      listTakes: async () => [],
+      getAssetUrl: async () => 'studio-media://pack/cover.png',
+    } as unknown as DesktopApi
+    showHome()
+    fireEvent.click(screen.getByRole('button', { name: 'Recordings menu' }))
+    expect(
+      await screen.findByText(
+        'No recordings yet. Record a track to add one here.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: `Open recording ${pack.metadata.title}`,
+      }),
+    ).toBeNull()
+    expect(screen.getByText('0 PROJECTS')).toBeInTheDocument()
+  })
+
+  it('offers continue, new recording, and delete on a hotbar pack', async () => {
+    const newerDraft = {
+      ...project,
+      id: '00000000-0000-4000-8000-000000000003',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    }
+    const newProject = {
+      ...project,
+      id: '00000000-0000-4000-8000-000000000004',
+    }
+    const createProject = vi.fn(async () => newProject)
+    window.studio = {
+      listPacks: async () => [pack],
+      listProjects: async () => [project, newerDraft],
+      listTakes: async (id: string) => (id === project.id ? [take] : []),
+      createProject,
+      getAssetUrl: async () => 'studio-media://pack/cover.png',
+    } as unknown as DesktopApi
+    showHome()
+    const tape = await screen.findByRole('button', {
+      name: `Load ${pack.metadata.title} from hotbar`,
+    })
+    fireEvent.contextMenu(tape, { clientX: 20, clientY: 20 })
+    const menu = screen.getByRole('menu', {
+      name: `${pack.metadata.title} options`,
+    })
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(3)
+    fireEvent.click(
+      within(menu).getByRole('menuitem', { name: 'Continue recording' }),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('studio')).toHaveTextContent(project.id),
+    )
+    expect(createProject).not.toHaveBeenCalled()
+    fireEvent.contextMenu(tape, { clientX: 20, clientY: 20 })
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'Create new recording' }),
+    )
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith(pack.id))
+    expect(screen.getByTestId('studio')).toHaveTextContent(newProject.id)
+    fireEvent.contextMenu(tape, { clientX: 20, clientY: 20 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete pack' }))
+    expect(
+      screen.getByRole('dialog', { name: 'Remove Dub Pack?' }),
+    ).toBeInTheDocument()
+  })
+
+  it('offers the same pack menu on a sidebar card', async () => {
+    window.studio = {
+      listPacks: async () => [pack],
+      listProjects: async () => [project],
+      listTakes: async () => [take],
+      getAssetUrl: async () => 'studio-media://pack/cover.png',
+    } as unknown as DesktopApi
+    showHome()
+    fireEvent.click(screen.getByRole('button', { name: 'Packs menu' }))
+    const card = (
+      await screen.findByRole('button', {
+        name: `Open ${pack.metadata.title}`,
+      })
+    ).closest('.home-pack-card')
+    expect(card).not.toBeNull()
+    fireEvent.contextMenu(card!, { clientX: 20, clientY: 20 })
+    const menu = screen.getByRole('menu', {
+      name: `${pack.metadata.title} options`,
+    })
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent),
+    ).toEqual(['Continue recording', 'Create new recording', 'Delete pack'])
   })
 
   it('opens an existing project in place', async () => {
@@ -427,7 +524,7 @@ describe('HomePage', () => {
     window.studio = {
       listPacks: async () => [pack],
       listProjects: async () => [project],
-      listTakes: async () => [],
+      listTakes: async () => [take],
       deleteProject,
       getAssetUrl: async () => 'studio-media://pack/cover.png',
     } as unknown as DesktopApi

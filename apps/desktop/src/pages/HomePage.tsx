@@ -47,6 +47,12 @@ export function HomePage({
   const [pendingPack, setPendingPack] = useState<{
     pack: DubPack
     projectId?: string
+    createNew?: boolean
+  } | null>(null)
+  const [packMenu, setPackMenu] = useState<{
+    pack: DubPack
+    x: number
+    y: number
   } | null>(null)
   const [packs, setPacks] = useState<DubPack[]>([])
   const [projects, setProjects] = useState<DubbingProject[]>([])
@@ -73,6 +79,7 @@ export function HomePage({
   const [recordingProgress, setRecordingProgress] = useState<
     Record<string, { completed: number; total: number }>
   >({})
+  const [recordedProjectIds, setRecordedProjectIds] = useState<string[]>([])
   const [progressLoading, setProgressLoading] = useState(false)
 
   useEffect(() => {
@@ -96,6 +103,25 @@ export function HomePage({
         if (!active) return
         setPacks(packList)
         setProjects(projectList)
+        if (window.studio.listTakes)
+          void Promise.all(
+            projectList.map(async (project) => ({
+              id: project.id,
+              hasTake: (await window.studio.listTakes(project.id)).length > 0,
+            })),
+          ).then(
+            (entries) => {
+              if (active)
+                setRecordedProjectIds(
+                  entries
+                    .filter((entry) => entry.hasTake)
+                    .map((entry) => entry.id),
+                )
+            },
+            (reason) => {
+              if (active) setError(String(reason))
+            },
+          )
         setActiveProjectId(
           [...projectList]
             .filter((project) => project.session !== 'multiplayer')
@@ -125,6 +151,23 @@ export function HomePage({
       .toLocaleLowerCase()
       .includes(filter.toLocaleLowerCase()),
   )
+  const recordedProjects = projects.filter((project) =>
+    recordedProjectIds.includes(project.id),
+  )
+
+  useEffect(() => {
+    if (!packMenu) return
+    const close = () => setPackMenu(null)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [packMenu])
 
   const handleRoomInfoChange = useCallback((info: typeof roomInfo) => {
     setRoomInfo(info)
@@ -150,26 +193,38 @@ export function HomePage({
     }
   }
 
-  async function openPack(pack: DubPack) {
+  async function openPack(pack: DubPack, createNew = false) {
     if (busy || loading) return
     if (roomInfo) {
-      setPendingPack({ pack })
+      setPendingPack({ pack, createNew })
       return
     }
-    await loadPack(pack)
+    await loadPack(pack, createNew)
   }
 
-  async function loadPack(pack: DubPack) {
+  async function loadPack(pack: DubPack, createNew = false) {
     if (busy || loading) return
     setBusy(true)
     setError(null)
     try {
-      const existing = [...projects]
+      const candidates = [...projects]
         .filter(
           (project) =>
             project.packId === pack.id && project.session !== 'multiplayer',
         )
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      const recorded =
+        !createNew && window.studio.listTakes
+          ? await Promise.all(
+              candidates.map(async (project) => ({
+                project,
+                hasTake: (await window.studio.listTakes(project.id)).length > 0,
+              })),
+            )
+          : []
+      const existing = createNew
+        ? undefined
+        : (recorded.find((item) => item.hasTake)?.project ?? candidates[0])
       const project = existing ?? (await window.studio.createProject(pack.id))
       if (!existing) setProjects((current) => [...current, project])
       setActiveProjectId(project.id)
@@ -179,6 +234,15 @@ export function HomePage({
     } finally {
       setBusy(false)
     }
+  }
+
+  function showPackMenu(pack: DubPack, x: number, y: number) {
+    if (busy || loading) return
+    setPackMenu({
+      pack,
+      x: Math.max(0, Math.min(x, window.innerWidth - 210)),
+      y: Math.max(0, Math.min(y, window.innerHeight - 126)),
+    })
   }
 
   async function importPack() {
@@ -224,6 +288,11 @@ export function HomePage({
       ])
       setPacks(nextPacks)
       setProjects(nextProjects)
+      setRecordedProjectIds((current) =>
+        current.filter((id) =>
+          nextProjects.some((project) => project.id === id),
+        ),
+      )
       if (activePack?.id === pack.id) setActiveProjectId(null)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -240,6 +309,9 @@ export function HomePage({
       await window.studio.deleteProject(project.id)
       const remaining = projects.filter((item) => item.id !== project.id)
       setProjects(remaining)
+      setRecordedProjectIds((current) =>
+        current.filter((id) => id !== project.id),
+      )
       setRecordingProgress((current) => {
         const next = { ...current }
         delete next[project.id]
@@ -275,6 +347,7 @@ export function HomePage({
           return [
             project.id,
             {
+              hasTake: takes.length > 0,
               completed:
                 timeline.requiredDialogueIds.length -
                 timeline.missingDialogueIds.length,
@@ -285,8 +358,15 @@ export function HomePage({
       )
       setProjects(projectList)
       setPacks(packList)
+      setRecordedProjectIds(
+        entries.filter((entry) => entry?.[1].hasTake).map((entry) => entry![0]),
+      )
       setRecordingProgress(
-        Object.fromEntries(entries.filter((entry) => entry !== null)),
+        Object.fromEntries(
+          entries
+            .filter((entry) => entry !== null)
+            .map(([id, { completed, total }]) => [id, { completed, total }]),
+        ),
       )
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -375,7 +455,7 @@ export function HomePage({
               {sidebarSection === 'packs'
                 ? `${packs.length} PACKS`
                 : sidebarSection === 'recordings'
-                  ? `${projects.length} PROJECTS`
+                  ? `${recordedProjects.length} PROJECTS`
                   : 'LOCAL APP'}
             </span>
           </div>
@@ -417,11 +497,26 @@ export function HomePage({
                   <article
                     key={pack.id}
                     className={`home-pack-card ${activePack?.id === pack.id ? 'active' : ''}`}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      showPackMenu(pack, event.clientX, event.clientY)
+                    }}
                   >
                     <button
                       type="button"
                       className="home-pack-open"
                       onClick={() => void openPack(pack)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === 'ContextMenu' ||
+                          (event.shiftKey && event.key === 'F10')
+                        ) {
+                          event.preventDefault()
+                          const bounds =
+                            event.currentTarget.getBoundingClientRect()
+                          showPackMenu(pack, bounds.left, bounds.bottom)
+                        }
+                      }}
                       disabled={busy || loading}
                       aria-label={`Open ${pack.metadata.title}`}
                     >
@@ -434,46 +529,40 @@ export function HomePage({
                         className="home-pack-art"
                       />
                       <span className="home-pack-copy">
-                        <strong>{pack.metadata.title}</strong>
+                        <div>
+                          <strong>{pack.metadata.title}</strong>
+                          <small>
+                            {pack.dialogues.length} clips ·{' '}
+                            {pack.characters.length} roles
+                          </small>
+                        </div>
                         <small>
-                          {pack.dialogues.length} clips ·{' '}
-                          {pack.characters.length} roles
+                          {
+                            recordedProjects.filter(
+                              (project) => project.packId === pack.id,
+                            ).length
+                          }{' '}
+                          recordings
                         </small>
                       </span>
                     </button>
-                    <div className="home-pack-actions">
-                      <button
-                        type="button"
-                        onClick={() => void openPack(pack)}
-                        disabled={busy || loading}
-                      >
-                        Load pack
-                      </button>
-                      <span>
-                        {
-                          projects.filter(
+                    <button
+                      type="button"
+                      className="home-pack-delete"
+                      onClick={() =>
+                        setPendingRemoval({
+                          pack,
+                          projectCount: projects.filter(
                             (project) => project.packId === pack.id,
-                          ).length
-                        }{' '}
-                        recordings
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPendingRemoval({
-                            pack,
-                            projectCount: projects.filter(
-                              (project) => project.packId === pack.id,
-                            ).length,
-                          })
-                        }
-                        disabled={busy}
-                        aria-label={`Remove ${pack.metadata.title}`}
-                        title="Remove pack"
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </button>
-                    </div>
+                          ).length,
+                        })
+                      }
+                      disabled={busy}
+                      aria-label={`Remove ${pack.metadata.title}`}
+                      title="Remove pack"
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
                   </article>
                 ))}
               </section>
@@ -483,12 +572,12 @@ export function HomePage({
                 aria-label="Recordings"
                 className="home-sidebar-section home-recordings"
               >
-                {projects.length === 0 && (
+                {recordedProjects.length === 0 && (
                   <p className="home-sidebar-empty">
-                    No recordings yet. Load a pack to start one.
+                    No recordings yet. Record a track to add one here.
                   </p>
                 )}
-                {[...projects]
+                {[...recordedProjects]
                   .sort(
                     (a, b) =>
                       (a.session === 'multiplayer' ? 1 : 0) -
@@ -602,7 +691,9 @@ export function HomePage({
             {sidebarSection === 'settings' ? (
               <SidebarVersion />
             ) : (
-              <><FolderOpen aria-hidden="true" /> YOUR FILES STAY LOCAL</>
+              <>
+                <FolderOpen aria-hidden="true" /> YOUR FILES STAY LOCAL
+              </>
             )}
           </div>
         </aside>
@@ -670,6 +761,20 @@ export function HomePage({
                 type="button"
                 className={`studio-pack-tape ${activePack?.id === pack.id ? 'in-deck' : ''}`}
                 onClick={() => void openPack(pack)}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  showPackMenu(pack, event.clientX, event.clientY)
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === 'ContextMenu' ||
+                    (event.shiftKey && event.key === 'F10')
+                  ) {
+                    const bounds = event.currentTarget.getBoundingClientRect()
+                    event.preventDefault()
+                    showPackMenu(pack, bounds.left, bounds.bottom)
+                  }
+                }}
                 disabled={busy || loading}
                 aria-label={`Load ${pack.metadata.title} from hotbar`}
               >
@@ -714,6 +819,54 @@ export function HomePage({
           </div>
         </section>
       </main>
+      {packMenu && (
+        <div
+          className="home-pack-context-menu"
+          role="menu"
+          aria-label={`${packMenu.pack.metadata.title} options`}
+          style={{ left: packMenu.x, top: packMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const pack = packMenu.pack
+              setPackMenu(null)
+              void openPack(pack)
+            }}
+          >
+            Continue recording
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const pack = packMenu.pack
+              setPackMenu(null)
+              void openPack(pack, true)
+            }}
+          >
+            Create new recording
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const pack = packMenu.pack
+              setPackMenu(null)
+              setPendingRemoval({
+                pack,
+                projectCount: projects.filter(
+                  (project) => project.packId === pack.id,
+                ).length,
+              })
+            }}
+          >
+            Delete pack
+          </button>
+        </div>
+      )}
       {importProgress && <ImportProgressDialog progress={importProgress} />}
       {pendingRemoval && (
         <ConfirmDialog
@@ -783,7 +936,7 @@ export function HomePage({
               if (selection.projectId) {
                 setActiveProjectId(selection.projectId)
                 setSidebarSection(null)
-              } else await loadPack(selection.pack)
+              } else await loadPack(selection.pack, selection.createNew)
             })()
           }}
         />
@@ -820,10 +973,16 @@ function SidebarVersion() {
   useEffect(() => {
     let active = true
     window.studio.getAppVersion().then(
-      (value) => { if (active) setVersion(value) },
-      () => { if (active) setVersion('Unavailable') },
+      (value) => {
+        if (active) setVersion(value)
+      },
+      () => {
+        if (active) setVersion('Unavailable')
+      },
     )
-    return () => { active = false }
+    return () => {
+      active = false
+    }
   }, [])
   return (
     <div className="flex w-full items-center gap-2" aria-label="App version">
