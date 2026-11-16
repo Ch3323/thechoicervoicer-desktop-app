@@ -10,6 +10,15 @@
   scrollbar-width: thin;
 }
 
+/* Chromium uses the same track and thumb geometry for vertical and horizontal panels. */
+@supports (-webkit-appearance: none) {
+  :root,
+  :root * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+}
+
 :root::-webkit-scrollbar,
 :root *::-webkit-scrollbar {
   width: 10px;
@@ -36,4 +45,17 @@
 :root::-webkit-scrollbar-corner,
 :root *::-webkit-scrollbar-corner {
   background: var(--studio-scrollbar-track);
+}
+
+/* Hide the window scrollbar without disabling wheel, touch, or keyboard scrolling. */
+:root,
+:root body {
+  scrollbar-width: none;
+}
+
+:root::-webkit-scrollbar,
+:root body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
