@@ -15,7 +15,7 @@ export function SessionTopBar({
   leavingRoom?: boolean
 }) {
   return (
-    <header className="session-topbar">
+    <header className="session-topbar sticky top-0 z-20">
       <Link
         className="session-topbar-brand"
         to="/"

@@ -317,7 +317,10 @@ export function HomePage({
         onLeaveRoom={roomInfo ? () => setConfirmLeaveRoom(true) : undefined}
         leavingRoom={leavingRoom}
       />
-      <nav className="home-icon-rail" aria-label="Home menu">
+      <nav
+        className="home-icon-rail !top-[68px] !h-[calc(100vh-68px)]"
+        aria-label="Home menu"
+      >
         <button
           type="button"
           aria-label="Packs menu"
@@ -344,7 +347,10 @@ export function HomePage({
         </button>
       </nav>
       {sidebarSection && (
-        <aside className="home-sidebar" aria-label="Studio sidebar">
+        <aside
+          className="home-sidebar !top-[68px] !h-[calc(100vh-68px)]"
+          aria-label="Studio sidebar"
+        >
           <div className="home-sidebar-brand">
             <strong>
               CHOICER <span>VOICER</span>
