@@ -47,7 +47,8 @@ const api: DesktopApi = {
     ipcRenderer.on('room:state', listener)
     return () => ipcRenderer.removeListener('room:state', listener)
   },
-  roomSetPack: (packId) => ipcRenderer.invoke('room:pack', packId),
+  roomSetPack: (packId, projectId) =>
+    ipcRenderer.invoke('room:pack', packId, projectId),
   roomDownloadPack: () => ipcRenderer.invoke('room:download-pack'),
   roomSetVoiceEffect: (dialogueId, effect) =>
     ipcRenderer.invoke('room:voice-effect', dialogueId, effect),

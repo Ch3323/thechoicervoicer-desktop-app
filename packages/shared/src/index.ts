@@ -93,7 +93,7 @@ export interface DesktopApi {
   } | null>
   copyRoomDetails(kind: 'code' | 'invite'): Promise<void>
   onRoomState(callback: (state: RoomState | null) => void): () => void
-  roomSetPack(packId: string): Promise<void>
+  roomSetPack(packId: string, projectId?: string): Promise<void>
   roomDownloadPack(): Promise<DubPack>
   roomSetVoiceEffect(dialogueId: string, effect: VoiceEffect): Promise<void>
   roomClaimRole(characterId: string): Promise<void>

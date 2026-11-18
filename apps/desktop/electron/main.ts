@@ -9,8 +9,8 @@ import {
   shell,
 } from 'electron'
 import { basename, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { networkInterfaces } from 'node:os'
+import { createHash, randomUUID } from 'node:crypto'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { mkdir, rm, stat, rename } from 'node:fs/promises'
 import { mkdirSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
@@ -127,16 +127,45 @@ if (!gotSingleInstanceLock) {
     mainWindow.focus()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     const userData = app.getPath('userData')
+    const temporaryRoot = join(
+      tmpdir(),
+      `thechoicervoicer-${createHash('sha256').update(userData).digest('hex').slice(0, 24)}`,
+    )
+    // Clear files left by an interrupted session and caches from older versions.
+    await Promise.all(
+      [
+        temporaryRoot,
+        ...[
+          'previews',
+          'dub-previews',
+          'effect-previews',
+          'room-cache',
+          'drive-export-work',
+        ].map((name) => join(userData, name)),
+      ].map((path) => rm(path, { recursive: true, force: true })),
+    )
+    await mkdir(temporaryRoot, { recursive: true })
+    await session.defaultSession.clearCache()
+    let cleaningTemporaryFiles = false
+    app.on('will-quit', (event) => {
+      if (cleaningTemporaryFiles) return
+      event.preventDefault()
+      cleaningTemporaryFiles = true
+      void Promise.allSettled([
+        rm(temporaryRoot, { recursive: true, force: true }),
+        session.defaultSession.clearCache(),
+      ]).then(() => app.quit())
+    })
     const store = new LibraryStore(userData)
     const googleDrive = new GoogleDrive(userData)
     const packStorage = join(userData, 'packs')
-    const previewStorage = join(userData, 'previews')
-    const dubPreviewStorage = join(userData, 'dub-previews')
-    const effectStorage = join(userData, 'effect-previews')
+    const previewStorage = join(temporaryRoot, 'previews')
+    const dubPreviewStorage = join(temporaryRoot, 'dub-previews')
+    const effectStorage = join(temporaryRoot, 'effect-previews')
     const recordingStorage = join(userData, 'recordings')
-    const roomCacheRoot = join(userData, 'room-cache')
+    const roomCacheRoot = join(temporaryRoot, 'room-cache')
     const roomCacheRecordings = join(roomCacheRoot, 'recordings')
     const roomCachePreviews = join(roomCacheRoot, 'previews')
     const roomCacheStore = new LibraryStore(roomCacheRoot)
@@ -165,7 +194,7 @@ if (!gotSingleInstanceLock) {
       progressChannel: 'export:progress' | 'room:render-progress',
       signal: AbortSignal,
     ): Promise<import('@studio/shared').ExportResult> => {
-      const outputRoot = join(userData, 'drive-export-work')
+      const outputRoot = join(temporaryRoot, 'drive-export-work')
       await mkdir(outputRoot, { recursive: true })
       const outputPath = join(outputRoot, `${randomUUID()}.mp4`)
       try {
@@ -578,24 +607,32 @@ if (!gotSingleInstanceLock) {
           : `${info.address} ${info.state.code}`,
       )
     })
-    ipcMain.handle('room:pack', async (event, packId: unknown) => {
-      fromMainWindow(event)
-      const pack = await store.getPack(
-        z
-          .string()
-          .regex(/^[0-9a-f]{24}$/)
-          .parse(packId),
-      )
-      if (!pack) throw new Error('Dub Pack not found')
-      if (!roomClient) throw new Error('Join a room first')
-      roomPackId = pack.id
-      try {
-        await roomClient.request('room:pack', pack.id, 300_000)
-      } catch (error) {
-        roomPackId = null
-        throw error
-      }
-    })
+    ipcMain.handle(
+      'room:pack',
+      async (event, packId: unknown, projectId: unknown) => {
+        fromMainWindow(event)
+        const pack = await store.getPack(
+          z
+            .string()
+            .regex(/^[0-9a-f]{24}$/)
+            .parse(packId),
+        )
+        if (!pack) throw new Error('Dub Pack not found')
+        if (!roomClient) throw new Error('Join a room first')
+        const selectedProjectId = z.uuid().optional().parse(projectId)
+        roomPackId = pack.id
+        try {
+          await roomClient.request(
+            'room:pack',
+            { packId: pack.id, projectId: selectedProjectId },
+            300_000,
+          )
+        } catch (error) {
+          roomPackId = null
+          throw error
+        }
+      },
+    )
     ipcMain.handle(
       'room:voice-effect',
       (event, dialogueId: unknown, effect: unknown) => {

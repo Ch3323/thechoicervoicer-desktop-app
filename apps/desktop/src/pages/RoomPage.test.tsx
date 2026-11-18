@@ -383,6 +383,94 @@ describe('RoomPage setup', () => {
     expect(createProject).not.toHaveBeenCalled()
   })
 
+  it('offers saved recordings for the selected pack', async () => {
+    const state: RoomState = {
+      code: 'ABC234',
+      hostPlayerId: 'host',
+      players: [
+        { id: 'host', displayName: 'Host', connected: true, isHost: true },
+      ],
+      assignments: {},
+      dialogueOwners: {},
+      pack: null,
+      project: null,
+      takes: [],
+      exportProgress: null,
+      exportComplete: false,
+      readyPlayerIds: [],
+      started: false,
+    }
+    const roomSetPack = vi.fn(async () => undefined)
+    window.studio = {
+      getRoom: async () => null,
+      onRoomState: () => () => undefined,
+      listPacks: async () => [pack],
+      listProjects: async () => [
+        project,
+        {
+          ...project,
+          id: '00000000-0000-4000-8000-000000000002',
+          packId: 'other-pack',
+        },
+        {
+          ...project,
+          id: '00000000-0000-4000-8000-000000000003',
+        },
+      ],
+      listTakes: async (projectId: string) =>
+        projectId === project.id
+          ? [
+              {
+                id: '00000000-0000-4000-8000-000000000011',
+                projectId,
+                dialogueId: pack.dialogues[0].id,
+                fileRef: '00000000-0000-4000-8000-000000000011.wav',
+                mimeType: 'audio/wav',
+                durationSeconds: 1,
+                offsetSeconds: 0,
+                createdAt: project.createdAt,
+                selected: true,
+              },
+            ]
+          : [],
+      getAssetUrl: async (_packId: string, ref: string) =>
+        `studio-media://pack/${ref}`,
+      createRoom: async () => ({
+        state,
+        playerId: 'host',
+        address: '127.0.0.1:4318',
+      }),
+      roomSetPack,
+      roomClaimRole: async () => undefined,
+      roomClose: async () => undefined,
+    } as unknown as DesktopApi
+    render(
+      <MemoryRouter>
+        <RoomPage />
+      </MemoryRouter>,
+    )
+    const picker = await screen.findByRole('combobox', {
+      name: 'Recording to continue',
+    })
+    await waitFor(() =>
+      expect(within(picker).getAllByRole('option')).toHaveLength(2),
+    )
+    expect(picker).toHaveValue('')
+    expect(
+      within(picker).getByRole('option', { name: /1 clips/ }),
+    ).toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: project.id } })
+    expect(picker).toHaveValue(project.id)
+    fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+      target: { value: 'Host' },
+    })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'CREATE ROOM' }))
+    await waitFor(() =>
+      expect(roomSetPack).toHaveBeenCalledWith(pack.id, project.id),
+    )
+  })
+
   it('creates a room from a pack without an existing recording project', async () => {
     const steps: string[] = []
     const copyRoomDetails = vi.fn(async () => undefined)
@@ -793,7 +881,35 @@ it('advances the room waveform from audio frames without reloading it', async ()
   const button = await screen.findByRole('button', { name: 'Hear clip' })
   await waitFor(() => expect(button).toBeEnabled())
   await waitFor(() => expect(roomGetWaveform).toHaveBeenCalledTimes(1))
+  expect(
+    screen.getByRole('switch', { name: 'Play original audio' }),
+  ).toHaveAttribute('aria-checked', 'false')
+  expect(
+    screen.getByRole('switch', { name: 'Play clip video' }),
+  ).toHaveAttribute('aria-checked', 'true')
+  expect(screen.getByRole('switch', { name: 'Fast mode' })).toHaveAttribute(
+    'aria-checked',
+    'false',
+  )
+  const videoPlay = vi.fn().mockResolvedValue(undefined)
+  const audioPlay = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(container.querySelector('video')!, 'play', {
+    configurable: true,
+    value: videoPlay,
+  })
+  Object.defineProperty(container.querySelector('audio')!, 'play', {
+    configurable: true,
+    value: audioPlay,
+  })
+  fireEvent.click(screen.getByRole('switch', { name: 'Play clip video' }))
+  expect(
+    screen.getByRole('switch', { name: 'Play clip video' }),
+  ).toHaveAttribute('aria-checked', 'false')
+  videoPlay.mockClear()
+  audioPlay.mockClear()
   fireEvent.click(button)
+  expect(videoPlay).not.toHaveBeenCalled()
+  expect(audioPlay).toHaveBeenCalledOnce()
   await waitFor(() => expect(frames.length).toBeGreaterThan(0))
   const audio = container.querySelector('audio')!
   audio.currentTime = 0.5
@@ -983,6 +1099,11 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
   fireEvent.playing(video)
   await waitFor(() => expect(audio.currentTime).toBe(2.5))
   expect(screen.getByRole('button', { name: 'Export video' })).toBeEnabled()
+  fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+  expect(screen.getByRole('switch', { name: 'Fast mode' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  )
   fireEvent.click(screen.getByRole('button', { name: 'Export video' }))
   await waitFor(() =>
     expect(roomExport).toHaveBeenCalledWith({
@@ -990,7 +1111,7 @@ it('highlights Watch dub after every multiplayer line has a selected take', asyn
       requireComplete: false,
       backingVolume: 1.5,
       dubbingVolume: 1,
-      fastMode: false,
+      fastMode: true,
     }),
   )
 })

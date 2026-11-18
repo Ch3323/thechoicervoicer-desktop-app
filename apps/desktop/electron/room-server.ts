@@ -275,17 +275,29 @@ export async function startRoomServer(options: RoomServerOptions) {
         throw new Error('Close this room before changing the pack')
       if (state.players.some((player) => !player.isHost))
         throw new Error('Guests must leave before changing the pack')
-      const packId = z
-        .string()
-        .regex(/^[0-9a-f]{24}$/)
-        .parse(raw)
+      const { packId, projectId } = z
+        .object({
+          packId: z.string().regex(/^[0-9a-f]{24}$/),
+          projectId: z.uuid().optional(),
+        })
+        .parse(typeof raw === 'string' ? { packId: raw } : raw)
       const pack = await options.store.getPack(packId)
       if (!pack) throw new Error('Host pack not found')
-      // Each room owns a fresh project. Singleplayer takes stay separate.
-      const roomProject = await options.store.createProject(
-        pack.id,
-        'multiplayer',
-      )
+      const roomProject = projectId
+        ? await options.store.getProject(projectId)
+        : await options.store.createProject(pack.id, 'multiplayer')
+      if (!roomProject || roomProject.packId !== pack.id)
+        throw new Error('Recording does not belong to the selected Dub Pack')
+      const takes = await options.store.listTakes(roomProject.id)
+      if (projectId && !takes.some((take) => take.selected))
+        throw new Error('The selected recording has no recorded clips')
+      for (const take of takes.filter((item) => item.selected)) {
+        try {
+          await stat(recordingPath(options.recordingStorage, take))
+        } catch {
+          throw new Error('A selected recording file is missing')
+        }
+      }
       state.project = await options.store.updateRoles(
         roomProject.id,
         pack.characters.map((item) => item.id),
@@ -293,7 +305,7 @@ export async function startRoomServer(options: RoomServerOptions) {
       state.project = { ...state.project, lastExportPath: undefined }
       state.pack = { ...pack, source: { ...pack.source, location: 'LAN Host' } }
       state.packFingerprint = await packFingerprint(pack, options.packStorage)
-      state.takes = []
+      state.takes = takes
       state.assignments = {}
       state.dialogueOwners = {}
       state.exportProgress = null

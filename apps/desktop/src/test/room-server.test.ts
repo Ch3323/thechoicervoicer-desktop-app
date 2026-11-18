@@ -198,6 +198,26 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
     return { client, joined }
   }
   const host = await makeClient('Host', server.hostSecret)
+  await mkdir(join(recordingStorage, project.id), { recursive: true })
+  await cp(
+    join(folder, '01_Alice.wav'),
+    recordingPath(recordingStorage, oldTake),
+  )
+  await host.client.request('room:pack', {
+    packId: pack.id,
+    projectId: project.id,
+  })
+  await eventually(
+    () => host.client.getInfo()?.state.project?.id === project.id,
+  )
+  expect(host.client.getInfo()?.state.takes).toEqual([oldTake])
+  const emptyProject = await store.createProject(pack.id)
+  await expect(
+    host.client.request('room:pack', {
+      packId: pack.id,
+      projectId: emptyProject.id,
+    }),
+  ).rejects.toThrow('The selected recording has no recorded clips')
   await host.client.request('room:pack', pack.id)
   const rangedPackFile = await fetch(
     `http://127.0.0.1:${port}/pack/file/dub_video.ogv?code=${server.code}`,

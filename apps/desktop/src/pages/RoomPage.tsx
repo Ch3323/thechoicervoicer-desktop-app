@@ -22,6 +22,7 @@ import {
   RECORDING_TAIL_SECONDS,
   roomProjectForPlayer,
   type DubPack,
+  type DubbingProject,
   type RoomState,
   type DiscoveredRoom,
   type RoomJoinInfo,
@@ -35,6 +36,7 @@ import { VoiceEffectsPanel } from '@/components/VoiceEffectsPanel'
 import { OverlapWaveform } from '@/components/OverlapWaveform'
 import { PackThumbnail } from '@/components/PackThumbnail'
 import { SessionTopBar } from '@/components/SessionTopBar'
+import { Switch } from '@/components/ui/switch'
 import {
   appendLiveSample,
   newLiveTakeWaveform,
@@ -91,7 +93,12 @@ export function RoomPage({
   const [port, setPort] = useState(4318)
   const [mode, setMode] = useState<'create' | 'join'>('create')
   const [localPacks, setLocalPacks] = useState<DubPack[]>([])
+  const [localProjects, setLocalProjects] = useState<DubbingProject[]>([])
+  const [localRecordingCounts, setLocalRecordingCounts] = useState<
+    Record<string, number>
+  >({})
   const [selectedPackId, setSelectedPackId] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([])
   const [joinTarget, setJoinTarget] = useState<{
     address: string
@@ -118,6 +125,10 @@ export function RoomPage({
   >({})
   const effectSaveRef = useRef<Promise<void>>(Promise.resolve())
   const [clipPlaying, setClipPlaying] = useState(false)
+  const [playOriginalDuringRecording, setPlayOriginalDuringRecording] =
+    useState(false)
+  const [playClipVideo, setPlayClipVideo] = useState(true)
+  const [fastMode, setFastMode] = useState(false)
   const [playbackSeconds, setPlaybackSeconds] = useState(0)
   const [liveTake, setLiveTake] = useState<LiveTakeWaveform | null>(null)
   const [showClips, setShowClips] = useState(true)
@@ -357,9 +368,37 @@ export function RoomPage({
       },
       (reason) => setError(String(reason)),
     )
+    if (window.studio.listProjects) {
+      void (async () => {
+        try {
+          const projects = await window.studio.listProjects()
+          const counts = await Promise.all(
+            projects.map(
+              async (project) =>
+                [
+                  project.id,
+                  (await window.studio.listTakes?.(project.id))?.filter(
+                    (take) => take.selected,
+                  ).length ?? 0,
+                ] as const,
+            ),
+          )
+          setLocalProjects(projects)
+          setLocalRecordingCounts(Object.fromEntries(counts))
+        } catch (reason) {
+          setError(String(reason))
+        }
+      })()
+    }
   }, [])
 
   const setupPack = localPacks.find((item) => item.id === selectedPackId)
+  const setupProjects = localProjects
+    .filter(
+      (item) =>
+        item.packId === selectedPackId && localRecordingCounts[item.id] > 0,
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   const selectedJoinPack = localPacks.find(
     (item) => item.id === selectedJoinPackId,
   )
@@ -452,7 +491,10 @@ export function RoomPage({
         throw new Error('Choose a pack and at least one role')
       const room = await window.studio.createRoom(name, port)
       try {
-        await window.studio.roomSetPack(setupPack.id)
+        await window.studio.roomSetPack(
+          setupPack.id,
+          selectedProjectId || undefined,
+        )
         for (const roleId of selectedRoleIds)
           await window.studio.roomClaimRole(roleId)
         const updated = await window.studio.getRoom()
@@ -646,7 +688,7 @@ export function RoomPage({
     setPlaybackSeconds(selected.timestampSeconds)
     playbackModeRef.current = 'clip'
     setClipPlaying(true)
-    void Promise.all([video.play(), audio.play()])
+    void Promise.all([...(playClipVideo ? [video.play()] : []), audio.play()])
       .then(() => {
         if (playbackModeRef.current === 'clip')
           startPlayheadLoop(
@@ -986,6 +1028,7 @@ export function RoomPage({
                             disabled={localPacks.length === 0}
                             onChange={(event) => {
                               setSelectedPackId(event.target.value)
+                              setSelectedProjectId('')
                               setSelectedRoleIds([])
                             }}
                           >
@@ -1016,6 +1059,31 @@ export function RoomPage({
                       )}
                     </div>
                   </div>
+                  <label className="multiplayer-field">
+                    RECORDING (OPTIONAL)
+                    <span className="multiplayer-select-control">
+                      <select
+                        aria-label="Recording to continue"
+                        value={selectedProjectId}
+                        onChange={(event) =>
+                          setSelectedProjectId(event.target.value)
+                        }
+                      >
+                        <option value="">Start a new recording</option>
+                        {setupProjects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {new Date(project.updatedAt).toLocaleString()} ·{' '}
+                            {project.session === 'multiplayer'
+                              ? 'Multiplayer'
+                              : 'Singleplayer'}{' '}
+                            · {localRecordingCounts[project.id]} clips ·{' '}
+                            {project.id.slice(0, 8)}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown aria-hidden="true" />
+                    </span>
+                  </label>
                   <div className="multiplayer-role-title">
                     YOUR ROLES · SELECT ONE OR MORE
                   </div>
@@ -1134,6 +1202,12 @@ export function RoomPage({
               ).length ?? 0}{' '}
               more roles need a player.
             </p>
+            {state.takes.some((take) => take.selected) && (
+              <p className="multiplayer-lobby-message">
+                Continuing {state.takes.filter((take) => take.selected).length}{' '}
+                recorded clips.
+              </p>
+            )}
             <div className="multiplayer-room-code">
               <small>ROOM CODE</small>
               <strong>{state.code}</strong>
@@ -1549,11 +1623,14 @@ export function RoomPage({
                                 })
                               }
                               onEnded={() => {
-                                if (selected)
-                                  setPlaybackSeconds(
-                                    selected.timestampSeconds + sourceDuration,
-                                  )
-                                stopMedia()
+                                if (playbackModeRef.current === 'clip') {
+                                  if (selected)
+                                    setPlaybackSeconds(
+                                      selected.timestampSeconds +
+                                        sourceDuration,
+                                    )
+                                  stopMedia()
+                                }
                               }}
                             />
                             {selected && (
@@ -1632,7 +1709,16 @@ export function RoomPage({
                                   ),
                                 cue + sourceDuration,
                               )
-                              if (videoRef.current) {
+                              if (
+                                playOriginalDuringRecording &&
+                                audioRef.current
+                              ) {
+                                audioRef.current.currentTime = 0
+                                void audioRef.current
+                                  .play()
+                                  .catch((reason) => setError(String(reason)))
+                              }
+                              if (playClipVideo && videoRef.current) {
                                 videoRef.current.currentTime =
                                   selected.timestampSeconds
                                 void videoRef.current
@@ -1724,14 +1810,55 @@ export function RoomPage({
                             )}
                           />
                         )}
-                        {selected && canRecord && (
-                          <div className="mt-4">
-                            <VoiceEffectsPanel
-                              effect={selectedVoiceEffect}
-                              onChange={(effect) =>
-                                changeVoiceEffect(selected.id, effect)
-                              }
-                            />
+                        {selected && project && (
+                          <div className="mt-4 space-y-2.5">
+                            {canRecord && (
+                              <VoiceEffectsPanel
+                                effect={selectedVoiceEffect}
+                                onChange={(effect) =>
+                                  changeVoiceEffect(selected.id, effect)
+                                }
+                              />
+                            )}
+                            {(
+                              [
+                                [
+                                  'Play original audio',
+                                  playOriginalDuringRecording,
+                                  setPlayOriginalDuringRecording,
+                                  'During recording',
+                                ],
+                                [
+                                  'Play clip video',
+                                  playClipVideo,
+                                  setPlayClipVideo,
+                                  'While hearing and recording',
+                                ],
+                                [
+                                  'Fast mode',
+                                  fastMode,
+                                  setFastMode,
+                                  'Faster video export',
+                                ],
+                              ] as const
+                            ).map(([label, checked, change, description]) => (
+                              <div
+                                key={label}
+                                className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3.5 py-3 text-xs"
+                              >
+                                <span>
+                                  <strong className="block">{label}</strong>
+                                  <span className="text-muted-foreground">
+                                    {description}
+                                  </span>
+                                </span>
+                                <Switch
+                                  checked={checked}
+                                  onCheckedChange={change}
+                                  label={label}
+                                />
+                              </div>
+                            ))}
                           </div>
                         )}
                       </aside>
@@ -1745,7 +1872,7 @@ export function RoomPage({
                     takes={state.takes}
                     open={watchOpen}
                     onClose={() => setWatchOpen(false)}
-                    fastMode={false}
+                    fastMode={fastMode}
                     mode="room"
                     contentVersion={watchContentVersion}
                     completedLines={
