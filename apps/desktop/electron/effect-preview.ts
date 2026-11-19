@@ -59,6 +59,7 @@ export async function effectTakeUrl(
   dialogueId: string,
   takeId: string,
   effect: VoiceEffect,
+  gainDb = 0,
 ): Promise<string> {
   const [project, take] = await Promise.all([
     store.getProject(projectId),
@@ -73,6 +74,7 @@ export async function effectTakeUrl(
   )
     throw new Error('Selected recording not found for this dialogue')
   const filters = voiceEffectFilters(effect)
+  if (gainDb !== 0) filters.push(`volume=${(10 ** (gainDb / 20)).toFixed(6)}`)
   if (filters.length === 0) return `studio-media://take/${takeId}`
   const hash = createHash('sha256')
     .update(filters.join(','))

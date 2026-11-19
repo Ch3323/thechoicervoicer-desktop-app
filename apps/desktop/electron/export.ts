@@ -61,7 +61,10 @@ export function parseDuration(ffmpegOutput: string): number {
   return seconds
 }
 
-async function videoDuration(videoPath: string, signal?: AbortSignal): Promise<number> {
+async function videoDuration(
+  videoPath: string,
+  signal?: AbortSignal,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason)
     const child = spawn(ffmpegExecutable(), ['-hide_banner', '-i', videoPath], {
@@ -94,6 +97,8 @@ export function buildFilterGraph(
   backingVolume = 1,
   effects: Record<string, VoiceEffect> = {},
   dubbingVolume = 1,
+  limitOutput = true,
+  firstTakeInput = backingTrackUsed ? 2 : 1,
 ): string {
   const fixedDuration = duration.toFixed(3)
   const lines: string[] = []
@@ -106,12 +111,11 @@ export function buildFilterGraph(
       `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${fixedDuration}[bed]`,
     )
   }
-  const firstTakeInput = backingTrackUsed ? 2 : 1
   timeline.placements.forEach((placement, index) => {
     const delayMs = Math.round(placement.startSeconds * 1000)
     const filters = voiceEffectFilters(effects[placement.dialogueId])
     lines.push(
-      `[${firstTakeInput + index}:a:0]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${placement.trimStartSeconds.toFixed(3)}:end=${placement.durationSeconds.toFixed(3)},asetpts=PTS-STARTPTS,${filters.length ? `${filters.join(',')},` : ''}${dubbingVolume === 1 ? '' : `volume=${dubbingVolume.toFixed(2)},`}adelay=${delayMs}:all=1[t${index}]`,
+      `[${firstTakeInput + index}:a:0]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${placement.trimStartSeconds.toFixed(3)}:end=${placement.durationSeconds.toFixed(3)},asetpts=PTS-STARTPTS,${filters.length ? `${filters.join(',')},` : ''}${placement.gainDb === 0 && dubbingVolume === 1 ? '' : `volume=${(10 ** (placement.gainDb / 20) * dubbingVolume).toFixed(placement.gainDb === 0 ? 2 : 4)},`}adelay=${delayMs}:all=1[t${index}]`,
     )
   })
   if (timeline.placements.length === 0) {
@@ -122,13 +126,41 @@ export function buildFilterGraph(
       ...timeline.placements.map((_, index) => `[t${index}]`),
     ].join('')
     lines.push(
-      `${inputs}amix=inputs=${timeline.placements.length + 1}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration=${fixedDuration}[mix]`,
+      `${inputs}amix=inputs=${timeline.placements.length + 1}:duration=longest:dropout_transition=0:normalize=0,${limitOutput ? 'alimiter=limit=0.95,' : ''}atrim=duration=${fixedDuration}[mix]`,
     )
   }
   return lines.join(';\n')
 }
 
 const running = new Set<string>()
+const WINDOWS_COMMAND_BUDGET = 16_000
+
+function commandLength(args: string[]): number {
+  return args.reduce(
+    (total, arg) => total + arg.length + 3,
+    ffmpegExecutable().length,
+  )
+}
+
+function takeBatches(paths: string[]): number[][] {
+  const batches: number[][] = []
+  let batch: number[] = []
+  let length = 0
+  paths.forEach((path, index) => {
+    if (
+      batch.length > 0 &&
+      (batch.length >= 64 || length + path.length + 5 > 10_000)
+    ) {
+      batches.push(batch)
+      batch = []
+      length = 0
+    }
+    batch.push(index)
+    length += path.length + 5
+  })
+  if (batch.length > 0) batches.push(batch)
+  return batches
+}
 
 export async function exportProject(
   store: LibraryStore,
@@ -150,6 +182,7 @@ export async function exportProject(
     `.${basename(outputPath)}.${randomUUID()}.tmp.mp4`,
   )
   const scriptPath = `${temporary}.filter.txt`
+  const intermediatePaths: string[] = []
   try {
     const project = await store.getProject(projectId)
     if (!project) throw new Error('Project not found')
@@ -200,7 +233,7 @@ export async function exportProject(
       'utf8',
     )
 
-    const args = ['-hide_banner', '-y', '-i', video]
+    let args = ['-hide_banner', '-y', '-i', video]
     if (backing) args.push('-i', backing)
     for (const path of takePaths) args.push('-i', path)
     args.push(
@@ -231,23 +264,123 @@ export async function exportProject(
       '-nostats',
       temporary,
     )
+    if (
+      process.platform === 'win32' &&
+      commandLength(args) > WINDOWS_COMMAND_BUDGET
+    ) {
+      const batches = takeBatches(takePaths)
+      for (const [index, batch] of batches.entries()) {
+        signal?.throwIfAborted()
+        const audioPath = `${temporary}.${index}.flac`
+        const batchScript = `${temporary}.${index}.filter.txt`
+        intermediatePaths.push(audioPath, batchScript)
+        const batchTimeline = {
+          ...timeline,
+          placements: batch.map(
+            (placementIndex) => timeline.placements[placementIndex],
+          ),
+        }
+        await writeFile(
+          batchScript,
+          buildFilterGraph(
+            batchTimeline,
+            duration,
+            false,
+            1,
+            project.voiceEffects ?? {},
+            options.dubbingVolume ?? 1,
+            false,
+            0,
+          ),
+          'utf8',
+        )
+        const batchArgs = ['-hide_banner', '-y']
+        for (const placementIndex of batch)
+          batchArgs.push('-i', takePaths[placementIndex])
+        batchArgs.push(
+          '-filter_complex_script',
+          batchScript,
+          '-map',
+          '[mix]',
+          '-c:a',
+          'flac',
+          audioPath,
+        )
+        onProgress({
+          projectId,
+          percent: 0,
+          message: `Preparing audio ${index + 1} of ${batches.length}…`,
+        })
+        await ffmpegRun(batchArgs, undefined, signal)
+      }
+      const inputs = backing
+        ? ['[1:a:0]', ...batches.map((_, index) => `[${index + 2}:a:0]`)]
+        : batches.map((_, index) => `[${index + 1}:a:0]`)
+      const bed = backing
+        ? `[1:a:0]aresample=48000,aformat=channel_layouts=stereo,volume=${(options.backingVolume ?? 1).toFixed(2)},asetpts=PTS-STARTPTS,apad,atrim=duration=${duration.toFixed(3)}[bed]`
+        : `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}[bed]`
+      const batchInputs = backing ? inputs.slice(1) : inputs
+      await writeFile(
+        scriptPath,
+        `${bed};\n[bed]${batchInputs.join('')}amix=inputs=${batchInputs.length + 1}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration=${duration.toFixed(3)}[mix]`,
+        'utf8',
+      )
+      args = ['-hide_banner', '-y', '-i', video]
+      if (backing) args.push('-i', backing)
+      for (const path of intermediatePaths.filter((path) =>
+        path.endsWith('.flac'),
+      ))
+        args.push('-i', path)
+      args.push(
+        '-filter_complex_script',
+        scriptPath,
+        '-map',
+        '0:v:0',
+        '-map',
+        '[mix]',
+        '-t',
+        duration.toFixed(3),
+        '-c:v',
+        'libx264',
+        '-preset',
+        options.fastMode ? 'ultrafast' : 'veryfast',
+        '-crf',
+        options.fastMode ? '26' : '20',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-movflags',
+        '+faststart',
+        '-progress',
+        'pipe:1',
+        '-nostats',
+        temporary,
+      )
+    }
     onProgress({ projectId, percent: 0, message: 'Rendering video and audio…' })
-    await ffmpegRun(args, (line) => {
-      if (!line.startsWith('out_time=')) return
-      const time = line.slice('out_time='.length)
-      const match = /^(\d+):(\d+):(\d+(?:\.\d+)?)$/.exec(time)
-      if (!match) return
-      const elapsed =
-        Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
-      onProgress({
-        projectId,
-        percent: Math.min(
-          99,
-          Math.max(0, Math.round((elapsed / duration) * 100)),
-        ),
-        message: 'Rendering video and audio…',
-      })
-    }, signal)
+    await ffmpegRun(
+      args,
+      (line) => {
+        if (!line.startsWith('out_time=')) return
+        const time = line.slice('out_time='.length)
+        const match = /^(\d+):(\d+):(\d+(?:\.\d+)?)$/.exec(time)
+        if (!match) return
+        const elapsed =
+          Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+        onProgress({
+          projectId,
+          percent: Math.min(
+            99,
+            Math.max(0, Math.round((elapsed / duration) * 100)),
+          ),
+          message: 'Rendering video and audio…',
+        })
+      },
+      signal,
+    )
     signal?.throwIfAborted()
     await rename(temporary, outputPath)
     if (persistExport) await store.setLastExport(projectId, outputPath)
@@ -258,6 +391,9 @@ export async function exportProject(
     throw error
   } finally {
     await rm(scriptPath, { force: true })
+    await Promise.all(
+      intermediatePaths.map((path) => rm(path, { force: true })),
+    )
     running.delete(projectId)
   }
 }

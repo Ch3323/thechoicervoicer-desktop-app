@@ -29,6 +29,7 @@ import { discoverRooms } from '../../electron/room-discovery'
 import { downloadRoomPack } from '../../electron/room-pack-download'
 import { recordingPath } from '../../electron/recordings'
 import { roomPreviewTakeAudio } from '../../electron/preview-take'
+import { saveRoomHistory } from '../../electron/room-recordings'
 
 let root = ''
 let stopRoom: (() => Promise<void>) | null = null
@@ -488,6 +489,16 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
     durationSeconds: 0.4,
     bytes: bobBytes,
   })
+  await expect(
+    bob.client.request('room:take-gain', { takeId: first.id, gainDb: 12 }),
+  ).rejects.toThrow('do not own')
+  await alice.client.request('room:take-gain', { takeId: first.id, gainDb: 12 })
+  await eventually(
+    () =>
+      bob.client.getInfo()?.state.takes.find((take) => take.id === first.id)
+        ?.gainDb === 12,
+  )
+  expect((await store.getTake(first.id))?.gainDb).toBe(12)
   const effect = {
     preset: 'deep' as const,
     pitch: -4,
@@ -532,6 +543,16 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
   )
   expect(roomAudio.mimeType).toBe('audio/mp4')
   expect(roomAudio.bytes.byteLength).toBeGreaterThan(0)
+  const boostedRoomAudio = await roomPreviewTakeAudio(
+    alice.client,
+    roomProject!.id,
+    aliceLine.id,
+    first.id,
+    effect,
+    12,
+  )
+  expect(boostedRoomAudio.mimeType).toBe('audio/mp4')
+  expect(boostedRoomAudio.bytes.byteLength).toBeGreaterThan(0)
   const originalPreview = new URL(
     alice.client.mediaUrl(
       `/media/effect/${encodeURIComponent(aliceLine.id)}/${first.id}`,
@@ -634,6 +655,13 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
       persisted,
     ).missingDialogueIds,
   ).toHaveLength(0)
+  expect(
+    buildAudioTimeline(
+      pack,
+      (await store.getProject(roomProject!.id))!,
+      persisted,
+    ).placements.find((placement) => placement.takeId === first.id)?.gainDb,
+  ).toBe(12)
   const guestFolder = join(root, 'guest', 'Scene')
   await mkdir(join(root, 'guest'))
   await cp(folder, guestFolder, { recursive: true })
@@ -690,6 +718,134 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
     ),
   ).toBeTruthy()
   expect(await store.listTakes(project.id)).toEqual([oldTake])
-  await host.client.request('room:close')
+
+  const address = `127.0.0.1:${port}`
+  const lateInput = { address, code: server.code, displayName: 'Late guest', packFingerprint: fingerprint }
+  const lateGuest = new RoomClient({ ...lateInput, roleIds: [] }, () => undefined)
+  clients.push(lateGuest)
+  const late = await lateGuest.connect()
+  expect(late.state.started).toBe(true)
+  expect(late.state.takes.filter((take) => take.selected)).toHaveLength(2)
+  await expect(lateGuest.request('room:kick', host.joined.playerId)).rejects.toThrow('Only the Host')
+  await lateGuest.request('room:leave')
+  lateGuest.disconnect()
+  await bob.client.request('room:release', aliceRole.id)
+  const returningGuest = new RoomClient({ ...lateInput, roleIds: [aliceRole.id] }, () => undefined)
+  clients.push(returningGuest)
+  const returned = await returningGuest.connect()
+  expect(returned.state.assignments[aliceRole.id]).toBe(returned.playerId)
+  const token = returningGuest.getResumeToken()!
+  const mediaUrl = returningGuest.mediaUrl(`/media/take/${first.id}`)
+  returningGuest.disconnect()
+  await eventually(() => server.state.players.some(
+    (player) => player.id === returned.playerId && !player.connected,
+  ))
+  const resumeInfo = await fetch(
+    `http://${address}/room/join-info?code=${server.code}&name=Late%20guest`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  expect(await resumeInfo.json()).toMatchObject({ started: true, rejoining: true })
+
+  let kicked = false
+  const resumedGuest = new RoomClient({ ...lateInput, token }, (_state, reason) => {
+    if (reason === 'kicked') kicked = true
+  })
+  clients.push(resumedGuest)
+  const resumed = await resumedGuest.connect()
+  expect(resumed.playerId).toBe(returned.playerId)
+  expect(resumed.state.assignments[aliceRole.id]).toBe(returned.playerId)
+  await host.client.request('room:promote', bob.joined.playerId)
+  await eventually(() => bob.client.getInfo()?.state.hostPlayerId === bob.joined.playerId)
+  expect(server.state.players.filter((player) => player.isHost).map((player) => player.id))
+    .toEqual([bob.joined.playerId])
+  await expect(host.client.request('room:close')).rejects.toThrow('Only the Host')
+  await bob.client.request('room:kick', resumed.playerId)
+  await eventually(() => kicked)
+  expect(resumedGuest.getInfo()).toBeNull()
+  expect(server.state.assignments[aliceRole.id]).toBeUndefined()
+  expect(server.state.takes.filter((take) => take.selected)).toHaveLength(2)
+  expect((await fetch(mediaUrl)).ok).toBe(false)
+  const invalidResume = new RoomClient({ ...lateInput, token }, () => undefined)
+  clients.push(invalidResume)
+  await expect(invalidResume.connect()).rejects.toThrow('Room session has expired')
+  await host.client.request('room:leave')
+  host.client.disconnect()
+
+  const historyData = join(root, 'guest-history')
+  const historyRecordings = join(historyData, 'recordings')
+  const historyStore = new LibraryStore(historyData)
+  await historyStore.savePack(guestPack)
+  const unrelatedProject = await historyStore.createProject(guestPack.id)
+  const saveGuestHistory = (): Promise<void> =>
+    saveRoomHistory(
+      historyStore,
+      historyRecordings,
+      historyGuest.getInfo()!.state,
+      guestPack,
+      (path) => historyGuest.mediaUrl(path),
+    )
+  const makeHistoryGuest = () => {
+    const client = new RoomClient(
+      { ...lateInput, displayName: 'History guest' },
+      () => undefined,
+      saveGuestHistory,
+    )
+    clients.push(client)
+    return client
+  }
+  let historyGuest = makeHistoryGuest()
+  await historyGuest.connect()
+  await saveGuestHistory()
+  const savedProject = (await historyStore.listProjects()).find(
+    (item) => item.session === 'multiplayer',
+  )!
+  expect(savedProject.id).not.toBe(roomProject!.id)
+  expect(savedProject.packId).toBe(guestPack.id)
+  await historyGuest.request('room:leave')
+  historyGuest.disconnect()
+  expect(await new LibraryStore(historyData).listTakes(savedProject.id)).toHaveLength(2)
+
+  historyGuest = makeHistoryGuest()
+  await historyGuest.connect()
+  const latest = await bob.client.upload({
+    dialogueId: bobLine.id,
+    mimeType: 'audio/wav',
+    durationSeconds: 0.4,
+    bytes: await readFile(join(folder, '02_Bob.wav')),
+  })
+  await eventually(() =>
+    Boolean(
+      historyGuest.getInfo()?.state.takes.some((take) => take.id === latest.id),
+    ),
+  )
+  await bob.client.request('room:close')
   await eventually(() => bob.client.getInfo() === null)
+  expect(historyGuest.getInfo()).toBeNull()
+
+  const reopenedHistory = new LibraryStore(historyData)
+  expect(await reopenedHistory.getProject(unrelatedProject.id)).toEqual(
+    unrelatedProject,
+  )
+  const savedProjects = await reopenedHistory.listProjects()
+  expect(savedProjects.map((item) => item.id)).toEqual([
+    unrelatedProject.id,
+    savedProject.id,
+  ])
+  const localAliceLine = guestPack.dialogues.find(
+    (line) => line.sourceRef === aliceLine.sourceRef,
+  )!
+  expect(savedProjects[1].voiceEffects?.[localAliceLine.id]).toEqual(effect)
+  const historyTakes = await reopenedHistory.listTakes(savedProject.id)
+  expect(historyTakes).toHaveLength(3)
+  expect(historyTakes.filter((take) => take.selected)).toHaveLength(2)
+  expect(
+    historyTakes.find((take) => take.dialogueId === localAliceLine.id)?.gainDb,
+  ).toBe(12)
+  expect(
+    buildAudioTimeline(guestPack, savedProjects[1], historyTakes).missingDialogueIds,
+  ).toEqual([])
+  for (const take of historyTakes)
+    expect(
+      (await stat(recordingPath(historyRecordings, take))).size,
+    ).toBeGreaterThan(0)
 }, 60_000)

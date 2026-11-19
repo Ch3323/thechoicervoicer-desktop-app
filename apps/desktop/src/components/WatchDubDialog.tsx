@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import {
@@ -59,7 +59,7 @@ export function WatchDubDialog({
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [previewUnavailable, setPreviewUnavailable] = useState(false)
   const timeline = useMemo(
     () => buildAudioTimeline(pack, project, takes),
     [pack, project, takes],
@@ -69,14 +69,13 @@ export function WatchDubDialog({
     backingUrl,
     backingVolume,
     videoRef,
-    setError,
     open,
   )
   const {
     attachAudio: attachDubbingAudio,
     enableBoost: enableDubbingBoost,
     contextRef: dubbingContextRef,
-  } = useDubbingTrackVolume(takeAudioRefs, dubbingVolume, setError)
+  } = useDubbingTrackVolume(takeAudioRefs, dubbingVolume)
   const options: ExportOptions = {
     useBackingTrack: Boolean(pack.backingTrackRef),
     requireComplete: false,
@@ -150,8 +149,7 @@ export function WatchDubDialog({
         } else URL.revokeObjectURL(url)
       },
       (reason) => {
-        if (active)
-          setError(reason instanceof Error ? reason.message : String(reason))
+        if (active) reportError(reason, 'Backing audio is unavailable.')
       },
     )
     return () => {
@@ -199,11 +197,7 @@ export function WatchDubDialog({
         if (audio.paused) {
           void audio
             .play()
-            .catch((reason) =>
-              setError(
-                reason instanceof Error ? reason.message : String(reason),
-              ),
-            )
+            .catch((reason) => reportError(reason, 'A dubbed take could not be played.'))
         }
       }
     },
@@ -216,7 +210,7 @@ export function WatchDubDialog({
     backingAudioRef.current?.pause()
     for (const audio of takeAudioRefs.current.values()) audio.pause()
     setBusy(true)
-    setError(null)
+    setPreviewUnavailable(false)
     setPreviewUrl(null)
     setTakeUrls({})
     for (const url of takeObjectUrlsRef.current) URL.revokeObjectURL(url)
@@ -237,6 +231,7 @@ export function WatchDubDialog({
               placement.dialogueId,
               placement.takeId,
               effect,
+              ...(placement.gainDb !== 0 ? [placement.gainDb] : []),
             )
             return [placement.takeId, audio] as const
           }),
@@ -259,8 +254,10 @@ export function WatchDubDialog({
         setPreviewUrl(url)
       } else for (const [, source] of urls) URL.revokeObjectURL(source)
     } catch (reason) {
-      if (operation === operationRef.current)
-        setError(reason instanceof Error ? reason.message : String(reason))
+      if (operation === operationRef.current) {
+        setPreviewUnavailable(true)
+        reportError(reason, 'The dub preview is unavailable.')
+      }
     } finally {
       if (operation === operationRef.current) setBusy(false)
     }
@@ -269,7 +266,6 @@ export function WatchDubDialog({
   async function exportVideo() {
     const operation = ++operationRef.current
     setBusy(true)
-    setError(null)
     try {
       const result =
         mode === 'room'
@@ -282,8 +278,7 @@ export function WatchDubDialog({
             : `Exported to ${result.outputPath}`,
         )
     } catch (reason) {
-      if (operation === operationRef.current)
-        setError(reason instanceof Error ? reason.message : String(reason))
+      if (operation === operationRef.current) reportError(reason, 'Could not export the video.')
     } finally {
       if (operation === operationRef.current) setBusy(false)
     }
@@ -332,6 +327,7 @@ export function WatchDubDialog({
           <video
             ref={videoRef}
             src={previewUrl}
+            onError={() => reportError('The dub preview video could not be played.')}
             muted
             controls
             playsInline
@@ -373,7 +369,7 @@ export function WatchDubDialog({
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {busy ? `${message} ${progress}%` : (error ?? 'Preparing preview…')}
+            {busy ? `${message} ${progress}%` : previewUnavailable ? 'Preview unavailable' : 'Preparing preview…'}
           </div>
         )}
       </div>
@@ -381,6 +377,7 @@ export function WatchDubDialog({
         <audio
           key={backingUrl}
           ref={backingAudioRef}
+          onError={() => reportError('The backing audio could not be played.')}
           src={backingUrl}
           preload="auto"
         />
@@ -388,6 +385,7 @@ export function WatchDubDialog({
       {placements.map((placement) => (
         <audio
           key={placement.takeId}
+          onError={() => reportError('A dubbed take could not be played.')}
           ref={(element) => {
             if (element) {
               takeAudioRefs.current.set(placement.takeId, element)
@@ -406,11 +404,6 @@ export function WatchDubDialog({
           max={100}
           className="dub-render-progress mt-3 block h-1.5 w-full overflow-hidden rounded accent-primary"
         />
-      )}
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-red-300">
-          {playerError(error)}
-        </p>
       )}
       {completedLines !== undefined && totalLines !== undefined && (
         <p className="mt-2 text-xs text-muted-foreground">

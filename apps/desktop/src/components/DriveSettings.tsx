@@ -1,3 +1,4 @@
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 
@@ -9,7 +10,6 @@ export function DriveSettings() {
   const [clientId, setClientId] = useState('')
   const [folder, setFolder] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -21,7 +21,7 @@ export function DriveSettings() {
         }
       },
       (reason) => {
-        if (active) setError(String(reason))
+        if (active) reportError(reason)
       },
     )
     return () => {
@@ -31,11 +31,10 @@ export function DriveSettings() {
 
   async function connect() {
     setBusy(true)
-    setError('')
     try {
       setStatus(await window.studio.connectDrive(clientId, folder))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -43,12 +42,11 @@ export function DriveSettings() {
 
   async function disconnect() {
     setBusy(true)
-    setError('')
     try {
       await window.studio.disconnectDrive()
       setStatus({ connected: false })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -105,11 +103,6 @@ export function DriveSettings() {
             {busy ? 'Connecting…' : 'Connect Google Drive'}
           </Button>
         </>
-      )}
-      {error && (
-        <p role="alert" className="text-red-300">
-          {error}
-        </p>
       )}
     </div>
   )

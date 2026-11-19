@@ -46,6 +46,7 @@ export const RoomJoinInfoSchema = z.object({
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   title: z.string().min(1),
   started: z.boolean(),
+  rejoining: z.boolean().optional(),
   matchingPacks: z
     .array(z.object({ id: z.string().min(1), title: z.string() }))
     .default([]),
@@ -59,6 +60,7 @@ export const RoomJoinInfoSchema = z.object({
   ),
 })
 export type RoomJoinInfo = z.infer<typeof RoomJoinInfoSchema>
+export type RoomExitReason = 'kicked' | 'closed' | 'expired'
 
 /** Keep Host dialogue IDs while reading source media from the local pack. */
 export function roomPackForLocalAssets(

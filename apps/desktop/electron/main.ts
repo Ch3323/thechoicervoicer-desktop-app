@@ -11,11 +11,8 @@ import {
 import { basename, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { networkInterfaces, tmpdir } from 'node:os'
-import { mkdir, rm, stat, rename } from 'node:fs/promises'
+import { mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises'
 import { mkdirSync } from 'node:fs'
-import { createWriteStream } from 'node:fs'
-import { Readable, Transform } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
 import { VoiceEffectSchema, googleDriveExportsEnabled } from '@studio/shared'
 import { LibraryStore } from './library-store'
@@ -37,13 +34,17 @@ import { backingPreviewBytes } from './backing-preview'
 import { packFingerprint } from './pack-fingerprint'
 import { discoverRooms } from './room-discovery'
 import { downloadRoomPack } from './room-pack-download'
+import { downloadRoomTakes, saveRoomHistory } from './room-recordings'
 import { registerUpdates } from './updates'
 import { GoogleDrive } from './google-drive'
 import {
   RecordingTakeSchema,
   DisplayNameSchema,
+  RoomCodeSchema,
   RoomJoinInfoSchema,
   roomPackForLocalAssets,
+  type RoomExitReason,
+  type RoomState,
 } from '@studio/shared'
 
 let mainWindow: BrowserWindow | null = null
@@ -172,6 +173,40 @@ if (!gotSingleInstanceLock) {
     let roomServer: Awaited<ReturnType<typeof startRoomServer>> | null = null
     let roomClient: RoomClient | null = null
     let roomPackId: string | null = null
+    const resumePath = join(userData, 'room-resume.json')
+    const resumeSchema = z.object({
+      baseUrl: z.string(),
+      code: RoomCodeSchema,
+      displayName: DisplayNameSchema,
+      token: z.uuid(),
+    })
+    let roomResume = await readFile(resumePath, 'utf8')
+      .then((contents) => resumeSchema.safeParse(JSON.parse(contents)).data)
+      .catch(() => undefined)
+    let resumeWrite = Promise.resolve()
+    const saveRoomResume = (resume: typeof roomResume) => {
+      roomResume = resume
+      resumeWrite = resumeWrite
+        .then(async () => {
+          if (!resume) {
+            await rm(resumePath, { force: true })
+            return
+          }
+          const temporaryPath = `${resumePath}.tmp`
+          await writeFile(temporaryPath, JSON.stringify(resume), { mode: 0o600 })
+          await rename(temporaryPath, resumePath)
+        })
+        .catch((error: unknown) =>
+          console.error('Could not save room rejoin details', error),
+        )
+      return resumeWrite
+    }
+    const resumeFor = (baseUrl: string, code: string, name: string) =>
+      roomResume?.baseUrl === baseUrl &&
+      (!code || roomResume.code === code) &&
+      roomResume.displayName === name
+        ? roomResume
+        : undefined
     let roomRenderQueue: Promise<unknown> = Promise.resolve()
     const roomRenderControllers = new Set<AbortController>()
     const exportControllers = new Map<string, Set<AbortController>>()
@@ -268,13 +303,65 @@ if (!gotSingleInstanceLock) {
       })
     }
     const roomStateChanged = (
-      state: import('@studio/shared').RoomState | null,
+      state: RoomState | null,
+      reason?: RoomExitReason,
     ) => {
       if (!state) {
         roomClient = null
         roomPackId = null
       }
-      mainWindow?.webContents.send('room:state', state)
+      mainWindow?.webContents.send('room:state', state, reason)
+    }
+    const roomHistory = new WeakMap<
+      RoomClient,
+      { key: string; pending: Promise<void> }
+    >()
+    let historyWriteQueue = Promise.resolve()
+    const queueRoomHistory = (
+      client: RoomClient,
+      state: RoomState,
+      packId: string | null,
+    ) => {
+      if (
+        !state.started ||
+        !state.project ||
+        !state.pack ||
+        !state.takes.length ||
+        !packId ||
+        (roomServer?.code === state.code &&
+          roomServer.state.project?.id === state.project.id)
+      )
+        return Promise.resolve()
+      const key = JSON.stringify([packId, state.project, state.takes])
+      const previous = roomHistory.get(client)
+      if (previous?.key === key) return previous.pending
+      const pending = historyWriteQueue
+        .then(async () => {
+          if (roomHistory.get(client)?.key !== key) return
+          const pack = await store.getPack(packId)
+          if (!pack) throw new Error('Import the room Dub Pack first')
+          await saveRoomHistory(store, recordingStorage, state, pack, (path) =>
+            client.mediaUrl(path),
+          )
+        })
+      historyWriteQueue = pending.catch(() => undefined)
+        .catch((error: unknown) => {
+          if (roomHistory.get(client)?.key === key) roomHistory.delete(client)
+          throw error
+        })
+      roomHistory.set(client, { key, pending })
+      return pending
+    }
+    const saveLatestRoomHistory = async (client: RoomClient) => {
+      const state = client.getInfo()?.state
+      if (state) await queueRoomHistory(client, state, roomPackId)
+      let queued = roomHistory.get(client)
+      while (queued) {
+        await queued.pending
+        const latest = roomHistory.get(client)
+        if (queued === latest) break
+        queued = latest
+      }
     }
     const lanAddress = (port: number) => {
       const entries = Object.values(networkInterfaces()).flatMap(
@@ -311,65 +398,19 @@ if (!gotSingleInstanceLock) {
       const projectId = z.uuid().parse(state.project.id)
       const pack = await store.getPack(roomPackId)
       if (!pack) throw new Error('Import the room Dub Pack first')
-      await mkdir(join(roomCacheRecordings, projectId), {
-        recursive: true,
-      })
-      const selectedTakes = state.takes.filter((take) => take.selected)
-      let nextTake = 0
-      const downloadTake = async () => {
-        while (nextTake < selectedTakes.length) {
-          const rawTake = selectedTakes[nextTake++]
-          const take = RecordingTakeSchema.parse(rawTake)
+      const downloads = state.takes
+        .filter((take) => take.selected)
+        .map((raw) => {
+          const take = RecordingTakeSchema.parse(raw)
           if (take.projectId !== projectId)
             throw new Error('Room take belongs to another project')
-          const path = recordingPath(roomCacheRecordings, take)
-          try {
-            await stat(path)
-            continue
-          } catch {
-            /* Download the missing take. */
-          }
-          const response = await fetch(
-            client.mediaUrl(`/media/take/${take.id}`),
-          )
-          if (!response.ok)
-            throw new Error(`Could not download take ${take.id}`)
-          if (!response.body) throw new Error('Room take has no audio data')
-          const temporary = `${path}.download`
-          let bytes = 0
-          try {
-            await pipeline(
-              Readable.fromWeb(
-                response.body as import('node:stream/web').ReadableStream,
-              ),
-              new Transform({
-                transform(chunk: Buffer, _encoding, callback) {
-                  bytes += chunk.length
-                  callback(
-                    bytes > 100 * 1024 * 1024
-                      ? new Error('Room take has an invalid size')
-                      : null,
-                    chunk,
-                  )
-                },
-              }),
-              createWriteStream(temporary),
-            )
-            if (bytes === 0) throw new Error('Room take has an invalid size')
-            await rename(temporary, path)
-          } catch (error) {
-            await rm(temporary, { force: true })
-            throw error
-          }
-        }
-      }
-      const takeDownloads = await Promise.allSettled(
-        Array.from({ length: Math.min(3, selectedTakes.length) }, downloadTake),
+          return { take, sourceId: take.id }
+        })
+      await downloadRoomTakes(
+        roomCacheRecordings,
+        downloads,
+        (path) => client.mediaUrl(path),
       )
-      const failedTake = takeDownloads.find(
-        (result) => result.status === 'rejected',
-      )
-      if (failedTake?.status === 'rejected') throw failedTake.reason
       const roomPack = roomPackForLocalAssets(state.pack, pack)
       await roomCacheStore.syncRoomSnapshot(
         roomPack,
@@ -431,6 +472,9 @@ if (!gotSingleInstanceLock) {
           recordingStorage,
           effectStorage,
           port: parsedPort,
+          onClosed: () => {
+            roomServer = null
+          },
           createPreview: async (pack) => {
             await ensurePreview(pack, packStorage, previewStorage)
           },
@@ -470,8 +514,16 @@ if (!gotSingleInstanceLock) {
           : ''
         const url = new URL('/room/join-info', baseUrl)
         if (validatedCode) url.searchParams.set('code', validatedCode)
-        url.searchParams.set('name', DisplayNameSchema.parse(displayName))
-        const response = await fetch(url, { signal: AbortSignal.timeout(5000) })
+        const name = DisplayNameSchema.parse(displayName)
+        url.searchParams.set('name', name)
+        const resume = resumeFor(baseUrl, validatedCode, name)
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(5000),
+          redirect: 'error',
+          headers: resume
+            ? { Authorization: `Bearer ${resume.token}` }
+            : undefined,
+        })
         if (response.status === 409) throw new Error('Name already taken')
         if (!response.ok) throw new Error('Room is unavailable')
         const details = RoomJoinInfoSchema.parse(await response.json())
@@ -498,7 +550,7 @@ if (!gotSingleInstanceLock) {
       'room:prepare-pack',
       async (event, address: unknown, code: unknown) => {
         fromMainWindow(event)
-        if (roomClient || roomServer)
+        if (roomClient)
           throw new Error('Leave the current room first')
         return downloadRoomPack(
           z.string().max(64).parse(address),
@@ -521,10 +573,21 @@ if (!gotSingleInstanceLock) {
         displayName: unknown,
         packId: unknown,
         roleIds: unknown,
+        rejoining: unknown,
       ) => {
         fromMainWindow(event)
-        if (roomClient || roomServer)
+        if (roomClient)
           throw new Error('Leave the current room first')
+        const roomAddress = z.string().max(64).parse(address)
+        const baseUrl = parseLanAddress(roomAddress)
+        const name = DisplayNameSchema.parse(displayName)
+        const roomCode = z.string().parse(code).trim().toUpperCase()
+        const shouldResume = z.boolean().optional().parse(rejoining)
+        const resume = shouldResume
+          ? resumeFor(baseUrl, roomCode, name)
+          : undefined
+        if (shouldResume && !resume)
+          throw new Error('Room session has expired')
         const localPack =
           packId === undefined || packId === ''
             ? null
@@ -539,28 +602,53 @@ if (!gotSingleInstanceLock) {
         const fingerprint = localPack
           ? await packFingerprint(localPack, packStorage)
           : undefined
-        const client = new RoomClient(
+        if (roomClient) throw new Error('Leave the current room first')
+        const client: RoomClient = new RoomClient(
           {
-            address: z.string().max(64).parse(address),
-            code: z.string().parse(code),
-            displayName: z.string().parse(displayName),
+            address: roomAddress,
+            code: roomCode,
+            displayName: name,
             packFingerprint: fingerprint,
+            token: resume?.token,
             roleIds:
               roleIds === undefined
                 ? undefined
                 : z.array(z.string().min(1).max(1024)).max(64).parse(roleIds),
           },
-          roomStateChanged,
+          (state, reason) => {
+            if (roomClient !== client) return
+            const playerId = client.getInfo()?.playerId
+            if (
+              state?.players.some(
+                (player) => player.id === playerId && player.connected,
+              )
+            ) {
+              void queueRoomHistory(client, state, roomPackId).catch(
+                () => undefined,
+              )
+            }
+            if (reason && resumeFor(baseUrl, client.code, name))
+              void saveRoomResume(undefined)
+            roomStateChanged(state, reason)
+          },
+          () => saveLatestRoomHistory(client),
         )
         roomClient = client
         roomPackId = localPack?.id ?? null
         try {
           const info = await client.connect()
+          const token = client.getResumeToken()
+          if (roomClient === client && token)
+            await saveRoomResume({
+              baseUrl,
+              code: client.code,
+              displayName: name,
+              token,
+            })
+          if (roomClient !== client) throw new Error('Room connection ended')
           return info
         } catch (error) {
           client.disconnect()
-          if (roomClient === client) roomClient = null
-          roomPackId = null
           throw error
         }
       },
@@ -645,6 +733,18 @@ if (!gotSingleInstanceLock) {
         )
       },
     )
+    ipcMain.handle(
+      'room:take-gain',
+      (event, takeId: unknown, gainDb: unknown) => {
+        fromMainWindow(event)
+        return (
+          roomClient?.request('room:take-gain', {
+            takeId: z.uuid().parse(takeId),
+            gainDb: z.number().finite().min(-24).max(24).parse(gainDb),
+          }) ?? Promise.reject(new Error('Join a room first'))
+        )
+      },
+    )
     ipcMain.handle('room:claim', (event, characterId: unknown) => {
       fromMainWindow(event)
       return (
@@ -677,31 +777,46 @@ if (!gotSingleInstanceLock) {
         Promise.reject(new Error('Join a room first'))
       )
     })
+    for (const action of ['room:promote', 'room:kick'] as const) {
+      ipcMain.handle(action, (event, rawPlayerId: unknown) => {
+        fromMainWindow(event)
+        const playerId = z.uuid().parse(rawPlayerId)
+        if (!roomClient) throw new Error('Join a room first')
+        return roomClient.request(action, playerId)
+      })
+    }
     ipcMain.handle('room:leave', async (event) => {
       fromMainWindow(event)
       const client = roomClient
       if (!client) return
+      let historySaved = true
+      try {
+        await saveLatestRoomHistory(client)
+      } catch (error) {
+        console.error('Could not save the latest room recording history', error)
+        historySaved = false
+      }
+      if (roomClient !== client) return { historySaved }
       try {
         await client.request('room:leave')
-      } catch {
+        if (roomResume?.token === client.getResumeToken())
+          await saveRoomResume(undefined)
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === 'Host must close the room'
+        )
+          throw error
         // A room that has gone offline cannot acknowledge the leave request.
-      } finally {
-        client.disconnect()
-        if (roomClient === client) roomClient = null
       }
+      client.disconnect()
+      return { historySaved }
     })
-    ipcMain.handle('room:close', async (event) => {
+    ipcMain.handle('room:close', (event) => {
       fromMainWindow(event)
-      if (!roomServer) throw new Error('Only the Host can close the room')
       const client = roomClient
-      const server = roomServer
-      client?.disconnect()
-      roomClient = null
-      try {
-        await server.close()
-      } finally {
-        roomServer = null
-      }
+      if (!client) throw new Error('Join a room first')
+      return client.request('room:close')
     })
     ipcMain.handle('room:preview', async (event) => {
       fromMainWindow(event)
@@ -736,13 +851,23 @@ if (!gotSingleInstanceLock) {
     })
     ipcMain.handle(
       'room:effect-take-url',
-      (event, dialogueId: unknown, takeId: unknown, effect: unknown) => {
+      (
+        event,
+        dialogueId: unknown,
+        takeId: unknown,
+        effect: unknown,
+        gainDb: unknown,
+      ) => {
         fromMainWindow(event)
         if (!roomClient) throw new Error('Join a room first')
         const revision = encodeURIComponent(
           JSON.stringify(VoiceEffectSchema.parse(effect)),
         )
-        return `studio-media://room/effect/${encodeURIComponent(z.string().min(1).max(1024).parse(dialogueId))}/${z.uuid().parse(takeId)}?revision=${revision}`
+        const level =
+          gainDb === undefined
+            ? 0
+            : z.number().finite().min(-24).max(24).parse(gainDb)
+        return `studio-media://room/effect/${encodeURIComponent(z.string().min(1).max(1024).parse(dialogueId))}/${z.uuid().parse(takeId)}?revision=${revision}&gainDb=${level}`
       },
     )
     ipcMain.handle('room:watch', async (event) => {
@@ -1068,6 +1193,16 @@ if (!gotSingleInstanceLock) {
         )
       },
     )
+    ipcMain.handle(
+      'recordings:gain',
+      (event, takeId: unknown, gainDb: unknown) => {
+        fromMainWindow(event)
+        return store.updateTakeGain(
+          z.uuid().parse(takeId),
+          z.number().finite().min(-24).max(24).parse(gainDb),
+        )
+      },
+    )
     ipcMain.handle('recordings:url', async (event, takeId: unknown) => {
       fromMainWindow(event)
       const id = z.uuid().parse(takeId)
@@ -1084,6 +1219,7 @@ if (!gotSingleInstanceLock) {
         rawDialogueId: unknown,
         rawTakeId: unknown,
         rawEffect: unknown,
+        rawGainDb: unknown,
       ) => {
         fromMainWindow(event)
         const mode = z.enum(['single', 'room']).parse(rawMode)
@@ -1094,6 +1230,10 @@ if (!gotSingleInstanceLock) {
           rawEffect === undefined
             ? undefined
             : VoiceEffectSchema.parse(rawEffect)
+        const gainDb =
+          rawGainDb === undefined
+            ? 0
+            : z.number().finite().min(-24).max(24).parse(rawGainDb)
         if (mode === 'room') {
           if (!roomClient) throw new Error('Join a room first')
           return roomPreviewTakeAudio(
@@ -1102,6 +1242,7 @@ if (!gotSingleInstanceLock) {
             dialogueId,
             takeId,
             effect,
+            gainDb,
           )
         }
         return localPreviewTakeAudio(
@@ -1112,6 +1253,7 @@ if (!gotSingleInstanceLock) {
           dialogueId,
           takeId,
           effect,
+          gainDb,
         )
       },
     )
@@ -1123,6 +1265,7 @@ if (!gotSingleInstanceLock) {
         dialogueId: unknown,
         takeId: unknown,
         effect: unknown,
+        gainDb: unknown,
       ) => {
         fromMainWindow(event)
         return effectTakeUrl(
@@ -1133,6 +1276,9 @@ if (!gotSingleInstanceLock) {
           z.string().min(1).max(1024).parse(dialogueId),
           z.uuid().parse(takeId),
           VoiceEffectSchema.parse(effect),
+          gainDb === undefined
+            ? 0
+            : z.number().finite().min(-24).max(24).parse(gainDb),
         )
       },
     )

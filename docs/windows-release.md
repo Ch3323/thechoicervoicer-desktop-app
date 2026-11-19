@@ -4,7 +4,7 @@ The desktop application uses an x64 NSIS installer. It bundles Electron, applica
 
 ## Unsigned hobby release
 
-No certificate is needed for this route. Keep the GitHub repository public, commit the source, and push a tag named `tcvah-v<version>` (for the current source: `tcvah-v1.1.1`). The separate `hobby-release.yml` workflow runs the same checks and publishes the NSIS installer, blockmap, and `latest.yml` to a public GitHub Release. Do not mark it as a prerelease: the update client reads the latest public release.
+No certificate is needed for this route. Keep the GitHub repository public, commit the source, and push a tag named `tcvah-v<version>` (for the current source: `tcvah-v1.1.2`). The separate `hobby-release.yml` workflow runs the same checks and publishes the NSIS installer, blockmap, and `latest.yml` to a public GitHub Release. Do not mark it as a prerelease: the update client reads the latest public release.
 
 Windows may display an unknown publisher or SmartScreen warning. The unsigned build skips the updater's Authenticode signature check, so anyone able to replace the GitHub release assets could distribute a malicious update to users of this channel. Protect GitHub access and use this route only for trusted hobby testers. Do not mix signed production and unsigned hobby releases in the same update feed; existing signed installs should stay on a signed feed.
 

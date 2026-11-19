@@ -59,6 +59,7 @@ export async function saveRecording(
     mimeType: metadata.mimeType,
     durationSeconds: metadata.durationSeconds,
     offsetSeconds: metadata.offsetSeconds ?? 0,
+    gainDb: 0,
     createdAt: new Date().toISOString(),
     selected: true,
   })

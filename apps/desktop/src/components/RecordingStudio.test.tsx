@@ -52,6 +52,77 @@ afterEach(() => {
 })
 
 describe('recording studio controls', () => {
+  it('loads an audible processed preview when a take is boosted', async () => {
+    const getEffectTakeUrl = vi.fn(
+      async () => 'studio-media://effect/boosted.m4a',
+    )
+    const updateTakeGain = vi.fn(async () => ({ ...take, gainDb: 18 }))
+    window.studio = {
+      getTakeUrl: async () => 'studio-media://take/original.webm',
+      getEffectTakeUrl,
+      updateTakeGain,
+    } as unknown as DesktopApi
+    const { container } = render(
+      <RecordingStudio
+        project={project}
+        dialogue={pack.dialogues[0]}
+        takes={[take]}
+        onChanged={async () => undefined}
+        onHearClip={vi.fn()}
+        onStopClip={vi.fn()}
+        clipPlaying={false}
+        canHearClip
+        maxDurationSeconds={1}
+        onRecordingStart={vi.fn()}
+        onRecordingStop={vi.fn()}
+        onRecordingProgress={vi.fn()}
+        onRecordingSample={vi.fn()}
+        onPlayRecording={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+    const slider = screen.getByRole('slider', { name: 'Recorded track volume' })
+    expect(slider).toHaveAttribute('max', '24')
+    fireEvent.change(slider, { target: { value: '18' } })
+    expect(slider).toHaveValue('18')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(updateTakeGain).not.toHaveBeenCalled()
+    expect(getEffectTakeUrl).not.toHaveBeenCalled()
+    expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+      'studio-media://take/original.webm',
+    )
+    fireEvent.pointerUp(slider)
+    await waitFor(() =>
+      expect(updateTakeGain).toHaveBeenCalledWith(take.id, 18),
+    )
+    await waitFor(() =>
+      expect(getEffectTakeUrl).toHaveBeenCalledWith(
+        project.id,
+        take.dialogueId,
+        take.id,
+        {
+          preset: 'original',
+          pitch: 0,
+          tone: 0,
+          texture: 0,
+          space: 0,
+          echo: 0,
+          mod: 0,
+        },
+        18,
+      ),
+    )
+    await waitFor(() =>
+      expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+        'studio-media://effect/boosted.m4a',
+      ),
+    )
+    fireEvent.change(slider, { target: { value: '0' } })
+    fireEvent.pointerUp(slider)
+    await waitFor(() =>
+      expect(updateTakeGain).toHaveBeenLastCalledWith(take.id, 0),
+    )
+  })
+
   it('moves a nearly complete take smoothly onto the source end marker', async () => {
     window.studio = {
       getTakeUrl: async () => 'studio-media://take/short.webm',

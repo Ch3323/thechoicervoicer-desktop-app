@@ -1,10 +1,10 @@
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 
 export function useBackingTrackPlayback(
   backingUrl: string | null,
   volume: number,
   videoRef: RefObject<HTMLVideoElement | null>,
-  setError: (message: string) => void,
   enabled: boolean,
 ) {
   const backingAudioRef = useRef<HTMLAudioElement>(null)
@@ -16,9 +16,7 @@ export function useBackingTrackPlayback(
     const audio = backingAudioRef.current
     if (!audio || typeof AudioContext === 'undefined') return
     if (connectedAudioRef.current === audio) {
-      void backingContextRef.current?.resume().catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      )
+      void backingContextRef.current?.resume().catch(reportError)
       return
     }
     try {
@@ -31,13 +29,11 @@ export function useBackingTrackPlayback(
       backingGainRef.current = gain
       connectedAudioRef.current = audio
       gain.gain.value = volume / 100
-      void context.resume().catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      )
+      void context.resume().catch(reportError)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     }
-  }, [setError, volume])
+  }, [volume])
 
   const syncBacking = useCallback(
     (video: HTMLVideoElement) => {
@@ -49,18 +45,14 @@ export function useBackingTrackPlayback(
       }
       if (volume > 100) enableBoost()
       else if (backingContextRef.current)
-        void backingContextRef.current.resume().catch((reason) =>
-          setError(reason instanceof Error ? reason.message : String(reason)),
-        )
+        void backingContextRef.current.resume().catch(reportError)
       audio.playbackRate = video.playbackRate
       if (Math.abs(audio.currentTime - video.currentTime) > 0.08)
         audio.currentTime = video.currentTime
       if (audio.paused)
-        void audio.play().catch((reason) =>
-          setError(reason instanceof Error ? reason.message : String(reason)),
-        )
+        void audio.play().catch(reportError)
     },
-    [enableBoost, setError, volume],
+    [enableBoost, volume],
   )
 
   useEffect(() => {

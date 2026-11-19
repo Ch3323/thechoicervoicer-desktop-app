@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -10,18 +10,16 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 export function ProjectsPage() {
   const [projects, setProjects] = useState<DubbingProject[]>([])
   const [packs, setPacks] = useState<DubPack[]>([])
-  const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [pendingDeletion, setPendingDeletion] = useState<DubbingProject | null>(null)
 
   async function deleteProject(project: DubbingProject) {
     setBusyId(project.id)
-    setError(null)
     try {
       await window.studio.deleteProject(project.id)
       setProjects((current) => current.filter((item) => item.id !== project.id))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusyId(null)
     }
@@ -33,7 +31,7 @@ export function ProjectsPage() {
         setProjects(projectList)
         setPacks(packList)
       },
-      (reason) => setError(String(reason)),
+      (reason) => reportError(reason),
     )
   }, [])
 
@@ -55,11 +53,6 @@ export function ProjectsPage() {
           <p className="mt-3 text-muted-foreground">
             Continue exploring a Dub Pack and your selected roles.
           </p>
-          {error && (
-            <p role="alert" className="mt-6 text-red-200">
-              {playerError(error)}
-            </p>
-          )}
           {projects.length === 0 && (
             <div className="mt-10 rounded-2xl border border-dashed border-border p-8">
               <p className="text-muted-foreground">No projects yet.</p>

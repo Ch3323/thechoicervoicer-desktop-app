@@ -55,6 +55,51 @@ afterEach(() => {
 })
 
 describe('watch dub', () => {
+  it('uses saved take gain in the final cut audio without adding controls', async () => {
+    const getPreviewTakeAudio = vi.fn(async () => ({
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'audio/mp4',
+    }))
+    class MediaURL extends URL {
+      static createObjectURL = vi.fn(() => 'blob:boosted-take')
+      static revokeObjectURL = vi.fn()
+    }
+    vi.stubGlobal('URL', MediaURL)
+    window.studio = {
+      getPreviewUrl: async () => 'studio-media://pack/preview.mp4',
+      getPreviewTakeAudio,
+      cancelExport: async () => undefined,
+      onExportProgress: () => () => undefined,
+    } as unknown as DesktopApi
+    const { container } = render(
+      <WatchDubDialog
+        project={project}
+        pack={pack}
+        takes={[{ ...take, gainDb: 12 }]}
+        open
+        onClose={vi.fn()}
+        fastMode={false}
+      />,
+    )
+    await waitFor(() =>
+      expect(getPreviewTakeAudio).toHaveBeenCalledWith(
+        'single',
+        project.id,
+        take.dialogueId,
+        take.id,
+        undefined,
+        12,
+      ),
+    )
+    await waitFor(() =>
+      expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+        'blob:boosted-take',
+      ),
+    )
+    expect(screen.queryByText('Recorded tracks')).toBeNull()
+    expect(screen.queryByLabelText(/Session voice level/)).toBeNull()
+  })
+
   it('starts the backing track at the video position when it loads late', async () => {
     let finishBacking!: (bytes: Uint8Array) => void
     const play = vi

@@ -23,7 +23,7 @@ const api: DesktopApi = {
     ipcRenderer.invoke('updates:recording-activity', active),
   createRoom: (displayName, port) =>
     ipcRenderer.invoke('room:create', displayName, port),
-  joinRoom: (address, code, displayName, packId, roleIds) =>
+  joinRoom: (address, code, displayName, packId, roleIds, rejoining) =>
     ipcRenderer.invoke(
       'room:join',
       address,
@@ -31,6 +31,7 @@ const api: DesktopApi = {
       displayName,
       packId,
       roleIds,
+      rejoining,
     ),
   getRoomJoinInfo: (address, code, displayName) =>
     ipcRenderer.invoke('room:join-info', address, code, displayName),
@@ -43,7 +44,8 @@ const api: DesktopApi = {
     const listener = (
       _event: Electron.IpcRendererEvent,
       state: Parameters<typeof callback>[0],
-    ) => callback(state)
+      reason: Parameters<typeof callback>[1],
+    ) => callback(state, reason)
     ipcRenderer.on('room:state', listener)
     return () => ipcRenderer.removeListener('room:state', listener)
   },
@@ -52,17 +54,21 @@ const api: DesktopApi = {
   roomDownloadPack: () => ipcRenderer.invoke('room:download-pack'),
   roomSetVoiceEffect: (dialogueId, effect) =>
     ipcRenderer.invoke('room:voice-effect', dialogueId, effect),
+  roomSetTakeGain: (takeId, gainDb) =>
+    ipcRenderer.invoke('room:take-gain', takeId, gainDb),
   roomClaimRole: (characterId) => ipcRenderer.invoke('room:claim', characterId),
   roomReleaseRole: (characterId) =>
     ipcRenderer.invoke('room:release', characterId),
   roomSetReady: (ready) => ipcRenderer.invoke('room:ready', ready),
   roomStart: () => ipcRenderer.invoke('room:start'),
+  roomPromoteMember: (playerId) => ipcRenderer.invoke('room:promote', playerId),
+  roomKickMember: (playerId) => ipcRenderer.invoke('room:kick', playerId),
   roomLeave: () => ipcRenderer.invoke('room:leave'),
   roomClose: () => ipcRenderer.invoke('room:close'),
   roomGetPreviewUrl: () => ipcRenderer.invoke('room:preview'),
   roomGetAssetUrl: (assetRef) => ipcRenderer.invoke('room:asset', assetRef),
   roomGetBackingTrackBytes: () => ipcRenderer.invoke('room:backing-bytes'),
-  getPreviewTakeAudio: (mode, projectId, dialogueId, takeId, effect) =>
+  getPreviewTakeAudio: (mode, projectId, dialogueId, takeId, effect, gainDb) =>
     ipcRenderer.invoke(
       'recordings:preview-audio',
       mode,
@@ -70,10 +76,17 @@ const api: DesktopApi = {
       dialogueId,
       takeId,
       effect,
+      gainDb,
     ),
   roomGetTakeUrl: (takeId) => ipcRenderer.invoke('room:take-url', takeId),
-  roomGetEffectTakeUrl: (dialogueId, takeId, effect) =>
-    ipcRenderer.invoke('room:effect-take-url', dialogueId, takeId, effect),
+  roomGetEffectTakeUrl: (dialogueId, takeId, effect, gainDb) =>
+    ipcRenderer.invoke(
+      'room:effect-take-url',
+      dialogueId,
+      takeId,
+      effect,
+      gainDb,
+    ),
   roomRenderPreview: () => ipcRenderer.invoke('room:watch'),
   roomCancelRender: () => ipcRenderer.invoke('room:cancel-render'),
   onRoomRenderProgress: (callback) => {
@@ -120,14 +133,17 @@ const api: DesktopApi = {
     ipcRenderer.invoke('recordings:select', projectId, dialogueId, takeId),
   updateTakeOffset: (takeId, offsetSeconds) =>
     ipcRenderer.invoke('recordings:offset', takeId, offsetSeconds),
+  updateTakeGain: (takeId, gainDb) =>
+    ipcRenderer.invoke('recordings:gain', takeId, gainDb),
   getTakeUrl: (takeId) => ipcRenderer.invoke('recordings:url', takeId),
-  getEffectTakeUrl: (projectId, dialogueId, takeId, effect) =>
+  getEffectTakeUrl: (projectId, dialogueId, takeId, effect, gainDb) =>
     ipcRenderer.invoke(
       'recordings:effect-url',
       projectId,
       dialogueId,
       takeId,
       effect,
+      gainDb,
     ),
   getWaveform: (projectId, dialogueId) =>
     ipcRenderer.invoke('media:waveform', projectId, dialogueId),

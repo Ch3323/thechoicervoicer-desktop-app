@@ -8,6 +8,8 @@ export function playerError(reason: unknown, fallback = 'Something went wrong. P
 
   if (!message) return fallback
 
+  if (/notallowederror/i.test(message) && /play\(\)|autoplay|interact with the document/i.test(message))
+    return 'Playback was blocked. Press Play to try again.'
   if (/notallowederror|permission dismissed|microphone.*permission/i.test(message))
     return 'Microphone access was blocked. Allow microphone access in your device settings, then try again.'
   if (/notfounderror|requested device not found/i.test(message))
@@ -23,7 +25,7 @@ export function playerError(reason: unknown, fallback = 'Something went wrong. P
   if (/\b(EBUSY|EEXIST)\b|file is being used by another process/i.test(message))
     return 'That file is in use. Close it in other apps, then try again.'
   if (/\b(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|fetch failed|network error/i.test(message))
-    return 'Could not connect. Check your connection and the Host address, then try again.'
+    return 'Could not connect. Check your connection, then try again.'
   if (/ffmpeg|ffprobe|\bcodec\b|invalid data found when processing input/i.test(message))
     return 'This video or audio could not be processed. Check that the file plays normally, then try again.'
   if (/name already taken/i.test(message))

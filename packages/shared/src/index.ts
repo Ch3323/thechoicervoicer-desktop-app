@@ -21,7 +21,12 @@ import type {
   VoiceEffect,
 } from './models'
 import type { WaveformSnapshot } from './waveform'
-import type { DiscoveredRoom, RoomJoinInfo, RoomState } from './room'
+import type {
+  DiscoveredRoom,
+  RoomExitReason,
+  RoomJoinInfo,
+  RoomState,
+} from './room'
 
 export interface ImportProgress {
   phase: 'scanning' | 'extracting' | 'saving'
@@ -78,6 +83,7 @@ export interface DesktopApi {
     displayName: string,
     packId?: string,
     roleIds?: string[],
+    rejoining?: boolean,
   ): Promise<{ state: RoomState; playerId: string; address: string }>
   getRoomJoinInfo(
     address: string,
@@ -92,15 +98,20 @@ export interface DesktopApi {
     address: string
   } | null>
   copyRoomDetails(kind: 'code' | 'invite'): Promise<void>
-  onRoomState(callback: (state: RoomState | null) => void): () => void
+  onRoomState(
+    callback: (state: RoomState | null, reason?: RoomExitReason) => void,
+  ): () => void
   roomSetPack(packId: string, projectId?: string): Promise<void>
   roomDownloadPack(): Promise<DubPack>
   roomSetVoiceEffect(dialogueId: string, effect: VoiceEffect): Promise<void>
+  roomSetTakeGain(takeId: string, gainDb: number): Promise<void>
   roomClaimRole(characterId: string): Promise<void>
   roomReleaseRole(characterId: string): Promise<void>
   roomSetReady(ready: boolean): Promise<void>
   roomStart(): Promise<void>
-  roomLeave(): Promise<void>
+  roomPromoteMember(playerId: string): Promise<void>
+  roomKickMember(playerId: string): Promise<void>
+  roomLeave(): Promise<{ historySaved: boolean } | void>
   roomClose(): Promise<void>
   roomGetPreviewUrl(): Promise<string>
   roomGetAssetUrl(assetRef: string): Promise<string>
@@ -111,12 +122,14 @@ export interface DesktopApi {
     dialogueId: string,
     takeId: string,
     effect?: VoiceEffect,
+    gainDb?: number,
   ): Promise<PreviewTakeAudio>
   roomGetTakeUrl(takeId: string): Promise<string>
   roomGetEffectTakeUrl(
     dialogueId: string,
     takeId: string,
     effect: VoiceEffect,
+    gainDb?: number,
   ): Promise<string>
   roomRenderPreview(): Promise<string>
   roomCancelRender(): Promise<void>
@@ -169,12 +182,14 @@ export interface DesktopApi {
     takeId: string,
     offsetSeconds: number,
   ): Promise<RecordingTake>
+  updateTakeGain(takeId: string, gainDb: number): Promise<RecordingTake>
   getTakeUrl(takeId: string): Promise<string>
   getEffectTakeUrl(
     projectId: string,
     dialogueId: string,
     takeId: string,
     effect: VoiceEffect,
+    gainDb?: number,
   ): Promise<string>
   getWaveform(projectId: string, dialogueId: string): Promise<WaveformSnapshot>
   exportProject(

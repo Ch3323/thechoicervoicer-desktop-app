@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export interface CapturedTake {
@@ -101,7 +101,6 @@ export function useMicrophoneRecorder() {
   const [testLevel, setTestLevel] = useState(0)
   const [status, setStatus] = useState<RecordingStatus>('idle')
   const [level, setLevel] = useState(0)
-  const [error, setError] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const contextRef = useRef<AudioContext | null>(null)
@@ -170,14 +169,13 @@ export function useMicrophoneRecorder() {
       if (mountedRef.current)
         setDevices(available.filter((device) => device.kind === 'audioinput'))
     } catch (reason) {
-      if (mountedRef.current) setError(playerError(reason))
+      if (mountedRef.current) reportError(reason)
     }
   }, [])
 
   const startTest = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia || status !== 'idle') return
     stopTest()
-    setError(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints(),
@@ -208,7 +206,7 @@ export function useMicrophoneRecorder() {
       void refreshDevices()
     } catch (reason) {
       stopTest()
-      setError(playerError(reason))
+      reportError(reason)
     }
   }, [audioConstraints, refreshDevices, status, stopTest])
 
@@ -257,17 +255,16 @@ export function useMicrophoneRecorder() {
     ) => {
       if (recorderRef.current?.state === 'recording') return
       if (!Number.isFinite(maxDurationSeconds) || maxDurationSeconds <= 0) {
-        setError('The source clip length is unavailable.')
+        reportError('The source clip length is unavailable.')
         return
       }
       if (
         !navigator.mediaDevices?.getUserMedia ||
         typeof MediaRecorder === 'undefined'
       ) {
-        setError('Microphone recording is unavailable in this environment.')
+        reportError('Microphone recording is unavailable in this environment.')
         return
       }
-      setError(null)
       setStatus('requesting')
       stopTest()
       try {
@@ -346,7 +343,7 @@ export function useMicrophoneRecorder() {
         recorder.onerror = () => {
           failed = true
           if (mountedRef.current) {
-            setError('Microphone recording failed.')
+            reportError('Microphone recording failed.')
             setStatus('idle')
           }
           cleanupHardware()
@@ -361,7 +358,7 @@ export function useMicrophoneRecorder() {
           const blob = new Blob(chunks, { type: actualType })
           if (!actualType || blob.size === 0) {
             if (mountedRef.current)
-              setError('The recorder did not produce a supported audio file.')
+              reportError('The recorder did not produce a supported audio file.')
           } else {
             onCompleted({
               blob,
@@ -413,7 +410,7 @@ export function useMicrophoneRecorder() {
         cleanupHardware()
         recorderRef.current = null
         setStatus('idle')
-        setError(playerError(reason))
+        reportError(reason)
       }
     },
     [
@@ -462,7 +459,6 @@ export function useMicrophoneRecorder() {
     stopTest,
     status,
     level,
-    error,
     refreshDevices,
     start,
     stop,

@@ -1,9 +1,9 @@
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 
 export function useDubbingTrackVolume(
   audioRefs: RefObject<Map<string, HTMLAudioElement>>,
   volume: number,
-  setError: (message: string) => void,
 ) {
   const contextRef = useRef<AudioContext | null>(null)
   const gainRef = useRef<GainNode | null>(null)
@@ -35,13 +35,11 @@ export function useDubbingTrackVolume(
       for (const audio of audioRefs.current.values()) attachAudio(audio)
       void contextRef.current
         .resume()
-        .catch((reason) =>
-          setError(reason instanceof Error ? reason.message : String(reason)),
-        )
+        .catch(reportError)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     }
-  }, [attachAudio, audioRefs, setError, volume])
+  }, [attachAudio, audioRefs, volume])
 
   useEffect(() => {
     const gain = gainRef.current

@@ -124,6 +124,45 @@ export class LibraryStore {
     })
   }
 
+  async saveRoomHistory(
+    project: DubbingProject,
+    takes: RecordingTake[],
+  ): Promise<void> {
+    await this.mutate((data) => {
+      if (!data.packs.some((pack) => pack.id === project.packId))
+        throw new Error('The room Dub Pack is no longer in the library.')
+      const index = data.projects.findIndex((item) => item.id === project.id)
+      if (index < 0) data.projects.push(project)
+      else {
+        const existing = data.projects[index]
+        data.projects[index] = {
+          ...project,
+          lastExportPath: existing.lastExportPath,
+          updatedAt:
+            existing.updatedAt > project.updatedAt
+              ? existing.updatedAt
+              : project.updatedAt,
+        }
+      }
+      const incoming = new Set(takes.map((take) => take.id))
+      const selected = new Set(
+        takes.filter((take) => take.selected).map((take) => take.dialogueId),
+      )
+      data.takes = data.takes
+        .filter(
+          (take) => take.projectId !== project.id || !incoming.has(take.id),
+        )
+        .map((take) =>
+          take.projectId === project.id &&
+          take.selected &&
+          selected.has(take.dialogueId)
+            ? { ...take, selected: false }
+            : take,
+        )
+      data.takes.push(...takes)
+    })
+  }
+
   async removePack(
     id: string,
   ): Promise<{ pack: DubPack; projectIds: string[] }> {
@@ -297,6 +336,17 @@ export class LibraryStore {
       if (!take) throw new Error('Recording take not found')
       const validated = RecordingTakeSchema.parse({ ...take, offsetSeconds })
       Object.assign(take, validated)
+      const project = data.projects.find((item) => item.id === take.projectId)
+      if (project) project.updatedAt = new Date().toISOString()
+      return take
+    })
+  }
+
+  async updateTakeGain(takeId: string, gainDb: number): Promise<RecordingTake> {
+    return this.mutate((data) => {
+      const take = data.takes.find((item) => item.id === takeId)
+      if (!take) throw new Error('Recording take not found')
+      Object.assign(take, RecordingTakeSchema.parse({ ...take, gainDb }))
       const project = data.projects.find((item) => item.id === take.projectId)
       if (project) project.updatedAt = new Date().toISOString()
       return take

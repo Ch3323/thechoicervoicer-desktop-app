@@ -96,6 +96,7 @@ export interface RoomServerOptions {
   effectStorage: string
   port: number
   createPreview: (pack: DubPack) => Promise<void>
+  onClosed?: () => void
 }
 
 export async function startRoomServer(options: RoomServerOptions) {
@@ -117,7 +118,10 @@ export async function startRoomServer(options: RoomServerOptions) {
   )
   const hostSecret = randomUUID()
   const sessions = new Map<string, Session>()
+  const recordingWrites = new Set<Promise<unknown>>()
   let closed = false
+  let closingRequested = false
+  let closing: Promise<void> | undefined
   const state: RoomState = {
     code,
     hostPlayerId: '',
@@ -133,11 +137,11 @@ export async function startRoomServer(options: RoomServerOptions) {
     started: false,
   }
 
-  const broadcast = () => io.emit('room:state', state)
+  const broadcast = () => io.to('members').emit('room:state', state)
   const sessionFor = (socket: Socket): Session => {
     const token = socket.data.token as string | undefined
     const session = token && sessions.get(token)
-    if (!session || session.socketId !== socket.id)
+    if (closingRequested || closed || !session || session.socketId !== socket.id)
       throw new Error('Join the room first')
     return session
   }
@@ -146,6 +150,17 @@ export async function startRoomServer(options: RoomServerOptions) {
     if (session.playerId !== state.hostPlayerId)
       throw new Error('Only the Host can do this')
     return session
+  }
+  const removeMember = (session: Session) => {
+    sessions.delete(session.token)
+    state.players = state.players.filter((item) => item.id !== session.playerId)
+    state.readyPlayerIds = state.readyPlayerIds.filter(
+      (id) => id !== session.playerId,
+    )
+    for (const [role, owner] of Object.entries(state.assignments))
+      if (owner === session.playerId) delete state.assignments[role]
+    for (const [dialogueId, owner] of Object.entries(state.dialogueOwners))
+      if (owner === session.playerId) delete state.dialogueOwners[dialogueId]
   }
   const ackAction = <T>(
     socket: Socket,
@@ -189,9 +204,11 @@ export async function startRoomServer(options: RoomServerOptions) {
           roleIds: z.array(IdSchema).max(64).optional(),
         })
         .parse(raw)
-      if (closed || (input.code && input.code !== code))
+      if (closingRequested || closed || (input.code && input.code !== code))
         throw new Error('Room not found')
+      if (socket.data.token) throw new Error('Already joined this room')
       let session = input.token ? sessions.get(input.token) : undefined
+      if (input.token && !session) throw new Error('Room session has expired')
       if (!session) {
         if (state.players.length >= 32) throw new Error('Room is full')
         const isHost = input.hostSecret === hostSecret && !state.hostPlayerId
@@ -216,9 +233,8 @@ export async function startRoomServer(options: RoomServerOptions) {
         if (!isHost && input.roleIds) {
           if (input.packFingerprint !== state.packFingerprint)
             throw new Error('Download or select the matching Dub Pack first')
-          if (state.started) throw new Error('Room has already started')
           if (
-            !input.roleIds.length ||
+            (!state.started && !input.roleIds.length) ||
             new Set(input.roleIds).size !== input.roleIds.length
           )
             throw new Error('Choose at least one available role')
@@ -247,12 +263,16 @@ export async function startRoomServer(options: RoomServerOptions) {
         for (const roleId of input.roleIds ?? [])
           state.assignments[roleId] = playerId
       }
-      if (session.socketId)
-        io.sockets.sockets.get(session.socketId)?.disconnect(true)
+      const previousSocket = session.socketId
       session.socketId = socket.id
       socket.data.token = session.token
       const player = state.players.find((item) => item.id === session.playerId)!
       player.connected = true
+      if (input.packFingerprint)
+        player.packReady = input.packFingerprint === state.packFingerprint
+      if (previousSocket)
+        io.sockets.sockets.get(previousSocket)?.disconnect(true)
+      void socket.join('members')
       broadcast()
       return { token: session.token, playerId: session.playerId, state }
     })
@@ -298,13 +318,17 @@ export async function startRoomServer(options: RoomServerOptions) {
           throw new Error('A selected recording file is missing')
         }
       }
-      state.project = await options.store.updateRoles(
+      const fingerprint = await packFingerprint(pack, options.packStorage)
+      const project = await options.store.updateRoles(
         roomProject.id,
         pack.characters.map((item) => item.id),
       )
-      state.project = { ...state.project, lastExportPath: undefined }
+      hostFor(socket)
+      if (state.started || state.players.some((player) => !player.isHost))
+        throw new Error('Room changed while preparing the pack')
+      state.project = { ...project, lastExportPath: undefined }
       state.pack = { ...pack, source: { ...pack.source, location: 'LAN Host' } }
-      state.packFingerprint = await packFingerprint(pack, options.packStorage)
+      state.packFingerprint = fingerprint
       state.takes = takes
       state.assignments = {}
       state.dialogueOwners = {}
@@ -333,6 +357,31 @@ export async function startRoomServer(options: RoomServerOptions) {
         dialogueId,
         effect,
       )
+      state.exportComplete = false
+      state.exportProgress = null
+      broadcast()
+    })
+    ackAction(socket, 'room:take-gain', async (raw) => {
+      const { playerId } = sessionFor(socket)
+      const { takeId, gainDb } = z
+        .object({
+          takeId: z.uuid(),
+          gainDb: z.number().finite().min(-24).max(24),
+        })
+        .parse(raw)
+      const take = state.takes.find(
+        (item) => item.id === takeId && item.selected,
+      )
+      if (
+        !state.started ||
+        !state.project ||
+        !take ||
+        take.projectId !== state.project.id ||
+        !canRecordDialogue(state, playerId, take.dialogueId)
+      )
+        throw new Error('You do not own this recording')
+      await options.store.updateTakeGain(takeId, gainDb)
+      state.takes = await options.store.listTakes(state.project.id)
       state.exportComplete = false
       state.exportProgress = null
       broadcast()
@@ -419,24 +468,43 @@ export async function startRoomServer(options: RoomServerOptions) {
       const session = sessionFor(socket)
       if (session.playerId === state.hostPlayerId)
         throw new Error('Host must close the room')
-      state.players = state.players.filter(
-        (item) => item.id !== session.playerId,
+      removeMember(session)
+      void socket.leave('members')
+      delete socket.data.token
+      broadcast()
+    })
+    ackAction(socket, 'room:promote', (raw) => {
+      const host = hostFor(socket)
+      const playerId = z.uuid().parse(raw)
+      const target = state.players.find((player) => player.id === playerId)
+      if (!target?.connected || target.id === host.playerId)
+        throw new Error('Choose a connected member to promote')
+      if (!target.packReady)
+        throw new Error('Wait for the member to download the pack')
+      state.hostPlayerId = target.id
+      for (const player of state.players) player.isHost = player.id === target.id
+      broadcast()
+    })
+    ackAction(socket, 'room:kick', (raw) => {
+      const host = hostFor(socket)
+      const playerId = z.uuid().parse(raw)
+      const target = [...sessions.values()].find(
+        (item) => item.playerId === playerId,
       )
-      state.readyPlayerIds = state.readyPlayerIds.filter(
-        (id) => id !== session.playerId,
-      )
-      for (const [role, owner] of Object.entries(state.assignments))
-        if (owner === session.playerId) delete state.assignments[role]
-      for (const [dialogueId, owner] of Object.entries(state.dialogueOwners))
-        if (owner === session.playerId) delete state.dialogueOwners[dialogueId]
-      sessions.delete(session.token)
-      session.socketId = null
+      if (!target || target.playerId === host.playerId)
+        throw new Error('Choose a room member to remove')
+      removeMember(target)
+      const member = target.socketId && io.sockets.sockets.get(target.socketId)
+      if (member) {
+        member.emit('room:kicked')
+        member.disconnect(true)
+      }
       broadcast()
     })
     ackAction(socket, 'room:close', () => {
       hostFor(socket)
-      closed = true
-      setTimeout(() => io.emit('room:closed'), 0)
+      closingRequested = true
+      setTimeout(() => void close().catch(console.error), 0)
     })
     socket.on('disconnect', () => {
       const token = socket.data.token as string | undefined
@@ -516,11 +584,30 @@ export async function startRoomServer(options: RoomServerOptions) {
         name: DisplayNameSchema.optional(),
       })
       .parse(request.query)
-    if (closed || (query.code && query.code !== code) || !state.pack)
+    if (
+      closingRequested ||
+      closed ||
+      (query.code && query.code !== code) ||
+      !state.pack
+    )
       return reply.code(404).send({ error: 'Room not found' })
     const requestedName = query.name
+    const credential = z.uuid().safeParse(
+      request.headers.authorization?.replace(/^Bearer /, ''),
+    )
+    const session = credential.success && sessions.get(credential.data)
+    const rejoining = Boolean(
+      session &&
+      requestedName &&
+      state.players.some(
+        (player) =>
+          player.id === session.playerId &&
+          roomNameKey(player.displayName) === roomNameKey(requestedName),
+      ),
+    )
     if (
       requestedName &&
+      !rejoining &&
       state.players.some(
         (player) =>
           roomNameKey(player.displayName) === roomNameKey(requestedName),
@@ -532,6 +619,7 @@ export async function startRoomServer(options: RoomServerOptions) {
       fingerprint: state.packFingerprint,
       title: state.pack.metadata.title,
       started: state.started,
+      rejoining,
       roles: state.pack.characters.map((character) => ({
         id: character.id,
         name: character.name,
@@ -690,6 +778,7 @@ export async function startRoomServer(options: RoomServerOptions) {
     try {
       const query = MediaQuery.extend({
         revision: z.string().max(1024).optional(),
+        gainDb: z.coerce.number().finite().min(-24).max(24).optional(),
       }).parse(request.query)
       authorized(query.token)
       const { dialogueId, takeId } = z
@@ -701,7 +790,18 @@ export async function startRoomServer(options: RoomServerOptions) {
       const project = state.project
       const effect = query.revision
         ? VoiceEffectSchema.parse(JSON.parse(query.revision))
-        : project?.voiceEffects?.[dialogueId]
+        : (project?.voiceEffects?.[dialogueId] ??
+          (query.gainDb
+            ? {
+                preset: 'original' as const,
+                pitch: 0,
+                tone: 0,
+                texture: 0,
+                space: 0,
+                echo: 0,
+                mod: 0,
+              }
+            : undefined))
       if (
         !project ||
         !effect ||
@@ -716,6 +816,7 @@ export async function startRoomServer(options: RoomServerOptions) {
         dialogueId,
         takeId,
         effect,
+        query.gainDb ?? 0,
       )
       if (url.startsWith('studio-media://take/')) {
         const take = await options.store.getTake(takeId)
@@ -742,6 +843,8 @@ export async function startRoomServer(options: RoomServerOptions) {
   })
   fastify.put('/upload/:dialogueId', async (request, reply) => {
     try {
+      if (closingRequested)
+        return reply.code(409).send({ error: 'The room is closing' })
       const session = authorized(
         request.headers.authorization?.replace(/^Bearer /, ''),
       )
@@ -779,8 +882,13 @@ export async function startRoomServer(options: RoomServerOptions) {
           .code(400)
           .send({ error: 'Recording format does not match its audio data' })
       await validateDecodableAudio(bytes)
+      if (closingRequested)
+        return reply.code(409).send({ error: 'The room is closing' })
+      authorized(session.token)
+      if (!canRecordDialogue(state, session.playerId, dialogueId))
+        return reply.code(403).send({ error: 'You do not own this dialogue' })
       const projectId = state.project!.id
-      const take = await saveRecording(
+      const recording = saveRecording(
         options.recordingStorage,
         options.store,
         {
@@ -791,13 +899,24 @@ export async function startRoomServer(options: RoomServerOptions) {
           offsetSeconds: metadata['x-offset-seconds'],
           bytes,
         },
-      )
-      state.dialogueOwners[dialogueId] = session.playerId
-      state.takes = await options.store.listTakes(projectId)
-      state.exportComplete = false
-      state.exportProgress = null
-      broadcast()
-      return reply.send(take)
+      ).then(async (take) => {
+        if (
+          sessions.has(session.token) &&
+          canRecordDialogue(state, session.playerId, dialogueId)
+        )
+          state.dialogueOwners[dialogueId] = session.playerId
+        state.takes = await options.store.listTakes(projectId)
+        state.exportComplete = false
+        state.exportProgress = null
+        broadcast()
+        return take
+      })
+      recordingWrites.add(recording)
+      try {
+        return reply.send(await recording)
+      } finally {
+        recordingWrites.delete(recording)
+      }
     } catch (error) {
       return reply
         .code(400)
@@ -814,16 +933,22 @@ export async function startRoomServer(options: RoomServerOptions) {
     title: (state.pack?.metadata.title ?? 'Waiting for pack').slice(0, 120),
     players: state.players.filter((player) => player.connected).length,
   }))
-  return {
-    code,
-    hostSecret,
-    state,
-    async close() {
+  function close() {
+    return (closing ??= (async () => {
       stopAnnouncing()
+      closingRequested = true
+      await Promise.allSettled(recordingWrites)
+      // Keep recorded media available until connected guests save their copies.
+      await io
+        .to('members')
+        .timeout(8000)
+        .emitWithAck('room:closing')
+        .catch(() => undefined)
       closed = true
-      io.emit('room:closed')
+      io.to('members').emit('room:closed')
       await io.close()
       await fastify.close()
-    },
+    })().finally(() => options.onClosed?.()))
   }
+  return { code, hostSecret, state, close }
 }

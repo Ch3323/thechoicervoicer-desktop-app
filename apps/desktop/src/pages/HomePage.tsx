@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useState } from 'react'
 import {
   AudioLines,
@@ -70,7 +70,6 @@ export function HomePage({
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(
     null,
   )
-  const [error, setError] = useState<string | null>(null)
   const [pendingRemoval, setPendingRemoval] = useState<{
     pack: DubPack
     projectCount: number
@@ -87,12 +86,15 @@ export function HomePage({
   useEffect(() => {
     if (!window.studio.getRoom) return
     let active = true
-    void window.studio.getRoom().then((info) => {
-      if (!active || !info) return
-      setRoomInfo(info)
-      setActiveSession(info.state.started ? 'multiplayer' : 'single')
-      if (session === 'single') setRoomModalOpen(false)
-    })
+    void window.studio.getRoom().then(
+      (info) => {
+        if (!active || !info) return
+        setRoomInfo(info)
+        setActiveSession(info.state.started ? 'multiplayer' : 'single')
+        if (session === 'single') setRoomModalOpen(false)
+      },
+      (reason) => { if (active) reportError(reason) },
+    )
     return () => {
       active = false
     }
@@ -121,7 +123,7 @@ export function HomePage({
                 )
             },
             (reason) => {
-              if (active) setError(String(reason))
+              if (active) reportError(reason)
             },
           )
         setActiveProjectId(
@@ -134,7 +136,7 @@ export function HomePage({
       },
       (reason) => {
         if (active) {
-          setError(String(reason))
+          reportError(reason)
           setLoading(false)
         }
       },
@@ -177,6 +179,10 @@ export function HomePage({
     setRoomInfo(info)
     setActiveSession(info?.state.started ? 'multiplayer' : 'single')
   }, [])
+  const handleRoomExit = useCallback((message: string) => {
+    setRoomModalOpen(false)
+    reportError(message)
+  }, [])
 
   async function leaveRoom(): Promise<boolean> {
     if (!roomInfo || leavingRoom) return false
@@ -184,13 +190,17 @@ export function HomePage({
     try {
       if (roomInfo.playerId === roomInfo.state.hostPlayerId)
         await window.studio.roomClose()
-      else await window.studio.roomLeave()
+      else {
+        const result = await window.studio.roomLeave()
+        if (result?.historySaved === false)
+          reportError('Some room recordings could not be saved to this device.')
+      }
       setRoomInfo(null)
       setActiveSession('single')
       setRoomModalOpen(false)
       return true
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
       return false
     } finally {
       setLeavingRoom(false)
@@ -209,7 +219,6 @@ export function HomePage({
   async function loadPack(pack: DubPack, createNew = false) {
     if (busy || loading) return
     setBusy(true)
-    setError(null)
     try {
       const candidates = [...projects]
         .filter(
@@ -234,7 +243,7 @@ export function HomePage({
       setActiveProjectId(project.id)
       setSidebarSection(null)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -252,13 +261,14 @@ export function HomePage({
   async function importPack() {
     if (busy || loading) return
     setBusy(true)
-    setError(null)
     const unsubscribe = window.studio.onImportProgress(setImportProgress)
     try {
       const pack = await window.studio.importPack()
       if (!pack) return
       setPacks(await window.studio.listPacks())
-      void window.studio.getPreviewUrl(pack.id).catch(() => undefined)
+      void window.studio.getPreviewUrl(pack.id).catch((reason) =>
+        reportError(reason, 'The video preview is unavailable.'),
+      )
       const project = await window.studio.createProject(pack.id)
       setProjects((current) => [...current, project])
       if (roomInfo) setPendingPack({ pack, projectId: project.id })
@@ -267,7 +277,7 @@ export function HomePage({
         setSidebarSection(null)
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       unsubscribe()
       setBusy(false)
@@ -278,7 +288,6 @@ export function HomePage({
   async function removePack(pack: DubPack) {
     if (busy) return
     setBusy(true)
-    setError(null)
     try {
       await window.studio.removePack(pack.id)
       const [nextPacks, nextProjects] = await Promise.all([
@@ -294,7 +303,7 @@ export function HomePage({
       )
       if (activePack?.id === pack.id) setActiveProjectId(null)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -303,7 +312,6 @@ export function HomePage({
   async function deleteProject(project: DubbingProject) {
     if (busy) return
     setBusy(true)
-    setError(null)
     try {
       await window.studio.deleteProject(project.id)
       const remaining = projects.filter((item) => item.id !== project.id)
@@ -324,13 +332,13 @@ export function HomePage({
             null,
         )
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
   }
 
-  async function refreshRecordingProgress() {
+  const refreshRecordingProgress = useCallback(async () => {
     setProgressLoading(true)
     try {
       const [projectList, packList] = await Promise.all([
@@ -368,16 +376,22 @@ export function HomePage({
         ),
       )
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setProgressLoading(false)
     }
-  }
+  }, [])
+
+  const inRoom = Boolean(roomInfo)
+  useEffect(() => {
+    if (sidebarSection !== 'recordings') return
+    const timer = window.setTimeout(() => void refreshRecordingProgress(), 0)
+    return () => window.clearTimeout(timer)
+  }, [inRoom, refreshRecordingProgress, sidebarSection])
 
   function toggleSidebar(section: 'packs' | 'recordings' | 'settings') {
     const next = sidebarSection === section ? null : section
     setSidebarSection(next)
-    if (next === 'recordings') void refreshRecordingProgress()
   }
 
   return (
@@ -696,11 +710,6 @@ export function HomePage({
         </aside>
       )}
       <main className="home-content">
-        {error && (
-          <p role="alert" className="home-alert">
-            {playerError(error)}
-          </p>
-        )}
         <div className="home-content-body">
           {activeSession === 'single' &&
             (activeProjectId && activePack ? (
@@ -740,6 +749,7 @@ export function HomePage({
               modalOpen={roomModalOpen}
               onModalClose={() => setRoomModalOpen(false)}
               onRoomInfoChange={handleRoomInfoChange}
+              onRoomExit={handleRoomExit}
             />
           )}
         </div>
@@ -978,8 +988,10 @@ function SidebarVersion() {
       (value) => {
         if (active) setVersion(value)
       },
-      () => {
-        if (active) setVersion('Unavailable')
+      (reason) => {
+        if (!active) return
+        setVersion('Unavailable')
+        reportError(reason, 'Could not read the app version.')
       },
     )
     return () => {

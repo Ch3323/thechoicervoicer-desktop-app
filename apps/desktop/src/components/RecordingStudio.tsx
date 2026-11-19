@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
@@ -38,6 +38,7 @@ export function RecordingStudio({
   maxDurationSeconds,
   onPreRollStart,
   onRecordingStart,
+  onRecordingActivityChange,
   onRecordingStop,
   onRecordingProgress,
   onRecordingSample,
@@ -53,6 +54,7 @@ export function RecordingStudio({
   dubReady = false,
   voiceEffect,
   onSaveTake,
+  onUpdateTakeGain,
   onResolveTakeUrl,
   onResolveEffectTakeUrl,
 }: {
@@ -67,6 +69,7 @@ export function RecordingStudio({
   maxDurationSeconds: number | null
   onPreRollStart?: () => void
   onRecordingStart: () => void
+  onRecordingActivityChange?: (active: boolean) => void
   onRecordingStop: (automatic: boolean) => void
   onRecordingProgress: (relativeSeconds: number) => void
   onRecordingSample: (elapsedSeconds: number, amplitude: number) => void
@@ -88,11 +91,13 @@ export function RecordingStudio({
     offsetSeconds?: number
     bytes: Uint8Array
   }) => Promise<RecordingTake>
+  onUpdateTakeGain?: (takeId: string, gainDb: number) => Promise<void>
   onResolveTakeUrl?: (takeId: string) => Promise<string>
   onResolveEffectTakeUrl?: (
     dialogueId: string,
     takeId: string,
     effect: VoiceEffect,
+    gainDb?: number,
   ) => Promise<string>
 }) {
   const recorder = useMicrophoneRecorder()
@@ -108,15 +113,54 @@ export function RecordingStudio({
     null,
   )
   const [saving, setSaving] = useState(false)
+  const recordingActive = saving || recorder.status !== 'idle'
+  const inputActive = recordingActive || recorder.testing
   useEffect(() => {
-    const active = saving || recorder.status !== 'idle'
-    void window.studio.setRecordingActivity?.(active)
-    return () => { void window.studio.setRecordingActivity?.(false) }
-  }, [saving, recorder.status])
-  const [error, setError] = useState<string | null>(null)
+    void window.studio.setRecordingActivity?.(recordingActive).catch(reportError)
+    return () => {
+      void window.studio.setRecordingActivity?.(false).catch(reportError)
+    }
+  }, [recordingActive])
+  useEffect(() => {
+    onRecordingActivityChange?.(inputActive)
+    return () => onRecordingActivityChange?.(false)
+  }, [inputActive, onRecordingActivityChange])
   const assigned = dialogueMatchesRoles(dialogue, project.enabledCharacterIds)
   const selectedTake = takes.find((take) => take.selected)
-  const effectKey = JSON.stringify(voiceEffect ?? null)
+  const selectedTakeId = selectedTake?.id
+  const [gainEdit, setGainEdit] = useState<{
+    takeId: string
+    value: number
+  } | null>(null)
+  const [appliedGain, setAppliedGain] = useState<{
+    takeId: string
+    value: number
+  } | null>(null)
+  const takeGainDb =
+    gainEdit && gainEdit.takeId === selectedTake?.id
+      ? gainEdit.value
+      : (selectedTake?.gainDb ?? 0)
+  const previewGainDb =
+    appliedGain && appliedGain.takeId === selectedTake?.id
+      ? appliedGain.value
+      : (selectedTake?.gainDb ?? 0)
+  async function saveTakeGain() {
+    if (!selectedTake || takeGainDb === previewGainDb) return
+    const takeId = selectedTake.id
+    const gainDb = takeGainDb
+    setAppliedGain({ takeId, value: gainDb })
+    try {
+      if (onUpdateTakeGain) await onUpdateTakeGain(takeId, gainDb)
+      else await window.studio.updateTakeGain(takeId, gainDb)
+      await onChanged()
+    } catch (reason) {
+      setAppliedGain((current) =>
+        current?.takeId === takeId && current.value === gainDb ? null : current,
+      )
+      reportError(reason)
+    }
+  }
+  const effectKey = JSON.stringify([voiceEffect ?? null, previewGainDb])
   const recordingKey = `${selectedTake?.id ?? ''}:${effectKey}`
   const recordingPlaying = playingRecordingKey === recordingKey
   const recordingUrl =
@@ -133,7 +177,7 @@ export function RecordingStudio({
   }, [effectKey, selectedTake?.id])
 
   useEffect(() => {
-    if (!selectedTake) return
+    if (!selectedTakeId) return
     let active = true
     const processed = Boolean(
       voiceEffect &&
@@ -149,40 +193,71 @@ export function RecordingStudio({
     )
     const load = () => {
       const getUrl =
-        processed && voiceEffect
+        (processed || previewGainDb !== 0) &&
+        (voiceEffect || previewGainDb !== 0)
           ? onResolveEffectTakeUrl
-            ? onResolveEffectTakeUrl(dialogue.id, selectedTake.id, voiceEffect)
+            ? onResolveEffectTakeUrl(
+                dialogue.id,
+                selectedTakeId,
+                voiceEffect ?? {
+                  preset: 'original',
+                  pitch: 0,
+                  tone: 0,
+                  texture: 0,
+                  space: 0,
+                  echo: 0,
+                  mod: 0,
+                },
+                ...(previewGainDb === 0 ? [] : [previewGainDb]),
+              )
             : window.studio.getEffectTakeUrl(
                 project.id,
                 dialogue.id,
-                selectedTake.id,
-                voiceEffect,
+                selectedTakeId,
+                voiceEffect ?? {
+                  preset: 'original',
+                  pitch: 0,
+                  tone: 0,
+                  texture: 0,
+                  space: 0,
+                  echo: 0,
+                  mod: 0,
+                },
+                ...(previewGainDb === 0 ? [] : [previewGainDb]),
               )
           : onResolveTakeUrl
-            ? onResolveTakeUrl(selectedTake.id)
-            : window.studio.getTakeUrl(selectedTake.id)
+            ? onResolveTakeUrl(selectedTakeId)
+            : window.studio.getTakeUrl(selectedTakeId)
       getUrl.then(
         (url) => {
           if (active)
-            setSelectedTakeUrl({ id: selectedTake.id, effectKey, url })
+            setSelectedTakeUrl((current) =>
+              current?.id === selectedTakeId &&
+              current.effectKey === effectKey &&
+              current.url === url
+                ? current
+                : { id: selectedTakeId, effectKey, url },
+            )
         },
         (reason) => {
-          if (active) setError(String(reason))
+          if (active) reportError(reason)
         },
       )
     }
-    const timer = processed ? window.setTimeout(load, 250) : null
-    if (!processed) load()
+    const timer =
+      processed || previewGainDb !== 0 ? window.setTimeout(load, 250) : null
+    if (timer === null) load()
     return () => {
       active = false
       if (timer !== null) window.clearTimeout(timer)
     }
   }, [
-    selectedTake,
+    selectedTakeId,
     effectKey,
     project.id,
     dialogue.id,
     voiceEffect,
+    previewGainDb,
     onResolveTakeUrl,
     onResolveEffectTakeUrl,
   ])
@@ -194,6 +269,13 @@ export function RecordingStudio({
     },
     [],
   )
+
+  useEffect(() => {
+    const audio = recordingAudioRef.current
+    return () => {
+      if (audio && !audio.paused) audio.pause()
+    }
+  }, [selectedTakeUrl?.url])
 
   function stopRecordingPlayhead() {
     if (playbackFrameRef.current !== null)
@@ -294,7 +376,7 @@ export function RecordingStudio({
       (reason) => {
         audio.pause()
         onStopClip()
-        setError(reason instanceof Error ? reason.message : String(reason))
+        reportError(reason, 'The recorded take could not be played.')
       },
     )
   }
@@ -306,7 +388,6 @@ export function RecordingStudio({
 
   async function saveCaptured(take: CapturedTake) {
     setSaving(true)
-    setError(null)
     try {
       const input = {
         dialogueId: dialogue.id,
@@ -319,7 +400,7 @@ export function RecordingStudio({
       else await window.studio.saveTake({ ...input, projectId: project.id })
       await onChanged()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setSaving(false)
     }
@@ -355,6 +436,30 @@ export function RecordingStudio({
           </span>
         )}
       </div>
+      {selectedTake && (!onSaveTake || onUpdateTakeGain) && (
+        <label className="mt-4 block text-xs text-muted-foreground">
+          Recorded track volume · {takeGainDb > 0 ? '+' : ''}
+          {takeGainDb} dB
+          <input
+            type="range"
+            min="-24"
+            max="24"
+            step="1"
+            value={takeGainDb}
+            onChange={(event) =>
+              setGainEdit({
+                takeId: selectedTake.id,
+                value: Number(event.target.value),
+              })
+            }
+            onPointerUp={() => void saveTakeGain()}
+            onKeyUp={() => void saveTakeGain()}
+            onBlur={() => void saveTakeGain()}
+            className="mt-2 w-full accent-primary"
+            aria-label="Recorded track volume"
+          />
+        </label>
+      )}
       <div className="rail-controls mt-5 flex flex-col gap-2.5 [&_button]:w-full">
         <Button
           variant={clipPlaying ? 'secondary' : 'outline'}
@@ -657,6 +762,7 @@ export function RecordingStudio({
         <audio
           ref={recordingAudioRef}
           src={selectedTakeUrl.url}
+          onError={() => reportError('The recorded take could not be played.')}
           onPlay={() => setPlayingRecordingKey(recordingKey)}
           onPlaying={startRecordingPlayhead}
           onPause={() => {
@@ -675,11 +781,6 @@ export function RecordingStudio({
               )
           }}
         />
-      )}
-      {(recorder.error || error) && (
-        <p role="alert" className="mt-4 text-sm text-red-300">
-          {playerError(recorder.error || error)}
-        </p>
       )}
     </section>
   )

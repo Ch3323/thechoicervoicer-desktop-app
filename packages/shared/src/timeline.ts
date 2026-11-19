@@ -11,6 +11,8 @@ export interface AudioPlacement {
   trimStartSeconds: number
   /** Limits playback/export to the intended take length. */
   durationSeconds: number
+  /** Per-take level in decibels, before the master dubbing level. */
+  gainDb: number
 }
 
 export interface AudioTimeline {
@@ -57,6 +59,7 @@ export function buildAudioTimeline(
       startSeconds: Math.max(0, absolute),
       trimStartSeconds: Math.max(0, -absolute),
       durationSeconds: take.durationSeconds,
+      gainDb: take.gainDb ?? 0,
     })
   }
 

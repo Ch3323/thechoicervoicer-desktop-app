@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useId, useMemo, useState } from 'react'
 import type { WaveformSnapshot } from '@studio/shared'
 
@@ -22,6 +22,7 @@ export function OverlapWaveform({
   cueSeconds,
   playbackSeconds,
   onSourceDuration,
+  onSnapshot,
   liveTakePeaks,
   loadWaveform = loadLocalWaveform,
 }: {
@@ -30,6 +31,7 @@ export function OverlapWaveform({
   cueSeconds: number
   playbackSeconds: number
   onSourceDuration: (seconds: number) => void
+  onSnapshot?: (snapshot: WaveformSnapshot) => void
   liveTakePeaks?: number[]
   loadWaveform?: (
     projectId: string,
@@ -37,26 +39,29 @@ export function OverlapWaveform({
   ) => Promise<WaveformSnapshot | null>
 }) {
   const [snapshot, setSnapshot] = useState<WaveformSnapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [waveformUnavailable, setWaveformUnavailable] = useState(false)
   const svgId = useId().replace(/:/g, '')
   useEffect(() => {
     let active = true
     loadWaveform(projectId, dialogueId).then(
       (value) => {
-        if (!active || !value) return
+        if (!active) return
+        setWaveformUnavailable(!value)
+        if (!value) return
         setSnapshot(value)
         onSourceDuration(value.sourceDurationSeconds)
-        setError(null)
+        onSnapshot?.(value)
       },
       (reason) => {
-        if (active)
-          setError(reason instanceof Error ? reason.message : String(reason))
+        if (!active) return
+        setWaveformUnavailable(true)
+        reportError(reason, 'Waveform unavailable.')
       },
     )
     return () => {
       active = false
     }
-  }, [projectId, dialogueId, onSourceDuration, loadWaveform])
+  }, [projectId, dialogueId, onSourceDuration, onSnapshot, loadWaveform])
 
   const paths = useMemo(() => {
     const takePeaks = liveTakePeaks ?? snapshot?.take
@@ -99,7 +104,7 @@ export function OverlapWaveform({
         <span className="text-muted-foreground">
           {snapshot
             ? `${windowSeconds.toFixed(2)}s window`
-            : 'Preparing waveform'}
+            : waveformUnavailable ? 'Waveform unavailable' : 'Preparing waveform'}
         </span>
       </div>
       <svg
@@ -183,16 +188,11 @@ export function OverlapWaveform({
         <span>0.0s cue</span>
         <span>+{(start + windowSeconds).toFixed(1)}s</span>
       </div>
-      {!snapshot && !error && (
+      {!snapshot && !waveformUnavailable && (
         <p className="mt-2 text-xs text-muted-foreground">Loading waveform…</p>
       )}
-      {error && (
-        <p role="alert" className="mt-2 text-xs text-amber-200">
-          Waveform unavailable: {playerError(error)}
-        </p>
-      )}
       {snapshot?.warning && (
-        <p role="alert" className="mt-2 text-xs text-amber-200">
+        <p role="status" className="mt-2 text-xs text-amber-200">
           {snapshot.warning}
         </p>
       )}

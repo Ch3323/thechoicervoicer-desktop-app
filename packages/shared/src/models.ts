@@ -124,6 +124,7 @@ export const RecordingTakeSchema = z.object({
   mimeType: z.string().min(1),
   durationSeconds: z.number().finite().nonnegative(),
   offsetSeconds: z.number().finite().min(-3600).max(3600),
+  gainDb: z.number().finite().min(-24).max(24).optional(),
   createdAt: z.string().datetime(),
   selected: z.boolean(),
 })

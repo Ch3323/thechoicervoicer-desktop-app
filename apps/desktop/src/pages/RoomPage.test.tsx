@@ -9,6 +9,7 @@ import {
 } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { dismissErrorToast, getErrorToasts } from '@/lib/error-toast'
 import {
   parseDubPack,
   type DesktopApi,
@@ -42,6 +43,7 @@ const project: DubbingProject = {
 
 afterEach(() => {
   cleanup()
+  for (const toast of getErrorToasts()) dismissErrorToast(toast.id)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -81,8 +83,10 @@ describe('RoomPage setup', () => {
         name: /Scene.*127\.0\.0\.1:4318.*JOIN/,
       }),
     )
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Choose another name to join',
+    await waitFor(() =>
+      expect(getErrorToasts()).toContainEqual(expect.objectContaining({
+        message: expect.stringContaining('Choose another name to join'),
+      })),
     )
     expect(getRoomJoinInfo).toHaveBeenCalledWith(
       '127.0.0.1:4318',
@@ -95,7 +99,10 @@ describe('RoomPage setup', () => {
     expect(joinRoom).not.toHaveBeenCalled()
   })
 
-  it('requires a Host pack download before choosing roles and joining', async () => {
+  it.each([
+    ['requires a Host pack download before choosing roles and joining', false],
+    ['joins a running session when all roles are already claimed', true],
+  ])('%s', async (_title, started) => {
     let localPacks: (typeof pack)[] = []
     const state: RoomState = {
       code: 'ABC234',
@@ -110,7 +117,7 @@ describe('RoomPage setup', () => {
           packReady: true,
         },
       ],
-      assignments: { [pack.characters[0].id]: 'guest' },
+      assignments: { [pack.characters[0].id]: started ? 'host' : 'guest' },
       dialogueOwners: {},
       pack,
       project: { ...project, enabledCharacterIds: [pack.characters[0].id] },
@@ -118,7 +125,7 @@ describe('RoomPage setup', () => {
       exportProgress: null,
       exportComplete: false,
       readyPlayerIds: [],
-      started: false,
+      started,
     }
     const joinRoom = vi.fn(async () => ({
       state,
@@ -144,7 +151,7 @@ describe('RoomPage setup', () => {
         code: 'ABC234',
         fingerprint: 'a'.repeat(64),
         title: 'Scene',
-        started: false,
+        started,
         matchingPacks: localPacks.map((item) => ({
           id: item.id,
           title: item.metadata.title,
@@ -154,13 +161,14 @@ describe('RoomPage setup', () => {
             id: pack.characters[0].id,
             name: pack.characters[0].name,
             clips: 1,
-            available: true,
+            available: !started,
           },
         ],
       }),
       joinRoom,
       roomGetPreviewUrl: async () => 'studio-media://room/preview',
       roomGetAssetUrl: async () => 'studio-media://room/asset/line.png',
+      roomGetWaveform: async () => null,
       prepareRoomPack: async () => {
         localPacks = [pack]
         return pack
@@ -204,6 +212,15 @@ describe('RoomPage setup', () => {
     })
     expect(downloadButton.closest('.multiplayer-lobby-pack')).not.toBeNull()
     fireEvent.click(downloadButton)
+    if (started) {
+      expect(await within(roles).findByRole('checkbox', { name: /A/ })).toBeDisabled()
+      fireEvent.click(within(roles).getByRole('button', { name: 'JOIN ROOM' }))
+      await waitFor(() => expect(joinRoom).toHaveBeenCalledWith(
+        '127.0.0.1:4318', 'ABC234', 'Taylor', pack.id, [],
+      ))
+      expect(await screen.findByLabelText('Video player')).toBeVisible()
+      return
+    }
     await waitFor(() =>
       expect(within(roles).getByRole('checkbox', { name: /A/ })).toBeEnabled(),
     )
@@ -612,7 +629,7 @@ describe('RoomPage setup', () => {
   })
 })
 
-it('updates role recording progress in the room modal during play', async () => {
+it('shows recording progress and host controls in the room roster during play', async () => {
   const roleId = pack.characters[0].id
   const dialogueId = pack.dialogues[0].id
   const state: RoomState = {
@@ -620,8 +637,10 @@ it('updates role recording progress in the room modal during play', async () => 
     hostPlayerId: 'host',
     players: [
       { id: 'host', displayName: 'Host', connected: true, isHost: true },
+      { id: 'guest', displayName: 'Guest', connected: true, isHost: false },
+      { id: 'waiting', displayName: 'Waiting', connected: false, isHost: false },
     ],
-    assignments: { [roleId]: 'host' },
+    assignments: { [roleId]: 'guest' },
     dialogueOwners: {},
     pack,
     project,
@@ -632,6 +651,8 @@ it('updates role recording progress in the room modal during play', async () => 
     started: true,
   }
   let onRoomState: ((state: RoomState | null) => void) | undefined
+  const roomPromoteMember = vi.fn(async () => undefined)
+  const roomKickMember = vi.fn(async () => undefined)
   window.studio = {
     getRoom: async () => ({
       state,
@@ -646,6 +667,8 @@ it('updates role recording progress in the room modal during play', async () => 
     roomGetPreviewUrl: async () => 'studio-media://room/preview',
     roomGetAssetUrl: async (ref: string) => `studio-media://room/asset/${ref}`,
     roomGetWaveform: async () => null,
+    roomPromoteMember,
+    roomKickMember,
   } as unknown as DesktopApi
 
   render(
@@ -663,6 +686,48 @@ it('updates role recording progress in the room modal during play', async () => 
   expect(incomplete).toHaveTextContent('0/1')
   expect(incomplete).not.toHaveClass('complete')
   expect(within(lobby).queryByRole('progressbar')).not.toBeInTheDocument()
+  const guestRow = incomplete.closest('.multiplayer-lobby-role') as HTMLElement
+  const guestActions = within(guestRow).getByRole('button', {
+    name: 'Actions for Guest',
+  })
+  expect(guestActions).toHaveTextContent('Actions')
+  expect(
+    guestActions.compareDocumentPosition(incomplete) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy()
+  const guestDropdown = document.getElementById(
+    guestActions.getAttribute('popovertarget')!,
+  )!
+  expect(guestDropdown).toHaveAttribute('popover', 'auto')
+  expect(guestDropdown).not.toBeVisible()
+  // jsdom does not run the browser's popover activation behavior.
+  guestDropdown.style.display = 'block'
+  fireEvent.click(
+    within(guestDropdown).getByRole('button', { name: 'Promote Guest to Host' }),
+  )
+  const promoteDialog = screen.getByRole('dialog', {
+    name: 'Transfer Host controls?',
+  })
+  fireEvent.click(within(promoteDialog).getByRole('button', { name: 'Promote' }))
+  await waitFor(() => expect(roomPromoteMember).toHaveBeenCalledWith('guest'))
+  const waitingActions = within(lobby).getByRole('button', {
+    name: 'Actions for Waiting',
+  })
+  const waitingDropdown = document.getElementById(
+    waitingActions.getAttribute('popovertarget')!,
+  )!
+  waitingDropdown.style.display = 'block'
+  expect(
+    within(waitingDropdown).getByRole('button', {
+      name: 'Promote Waiting to Host',
+    }),
+  ).toBeDisabled()
+  fireEvent.click(
+    within(waitingDropdown).getByRole('button', { name: 'Kick Waiting' }),
+  )
+  const kickDialog = screen.getByRole('dialog', { name: 'Kick room member?' })
+  fireEvent.click(within(kickDialog).getByRole('button', { name: 'Kick' }))
+  await waitFor(() => expect(roomKickMember).toHaveBeenCalledWith('waiting'))
 
   const take: RecordingTake = {
     id: '00000000-0000-4000-8000-000000000011',
@@ -681,6 +746,98 @@ it('updates role recording progress in the room modal during play', async () => 
   )
   expect(complete).toHaveTextContent('1/1')
   expect(complete).toHaveClass('complete')
+})
+
+it('reloads failed pack resources while keeping the current room and clip', async () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(
+    () => undefined,
+  )
+  const firstClip = pack.dialogues[0]
+  const clip = {
+    ...firstClip,
+    id: 'retry-clip',
+    caption: 'Retry this clip',
+    sourceRef: 'retry.wav',
+    timestampSeconds: 8,
+  }
+  const roomPack = { ...pack, dialogues: [firstClip, clip] }
+  const state: RoomState = {
+    code: 'ABC234',
+    hostPlayerId: 'host',
+    players: [{ id: 'host', displayName: 'Host', connected: true, isHost: true }],
+    assignments: { [pack.characters[0].id]: 'host' },
+    dialogueOwners: {},
+    pack: roomPack,
+    project,
+    takes: [],
+    exportProgress: null,
+    exportComplete: false,
+    readyPlayerIds: ['host'],
+    started: true,
+  }
+  const roomGetPreviewUrl = vi
+    .fn(async () => 'studio-media://room/preview')
+    .mockRejectedValueOnce(new Error('Video unavailable'))
+  const roomGetAssetUrl = vi.fn(
+    async (ref: string) => `studio-media://room/asset/${ref}`,
+  )
+  let waveformUnavailable = true
+  const roomGetWaveform = vi.fn(async (id: string) => {
+    if (id === clip.id && waveformUnavailable) {
+      waveformUnavailable = false
+      throw new Error('Could not load the waveform')
+    }
+    return {
+      original: [0, 0.5, 0],
+      take: null,
+      sourceDurationSeconds: 2,
+      windowStartSeconds: -1,
+      windowSeconds: 4,
+    }
+  })
+  const getRoom = vi.fn(async () => ({
+    state,
+    playerId: 'host',
+    address: '127.0.0.1:4318',
+  }))
+  window.studio = {
+    getRoom,
+    onRoomState: () => () => undefined,
+    listPacks: async () => [roomPack],
+    roomGetPreviewUrl,
+    roomGetAssetUrl,
+    roomGetWaveform,
+  } as unknown as DesktopApi
+
+  const { container } = render(
+    <MemoryRouter>
+      <RoomPage />
+    </MemoryRouter>,
+  )
+  fireEvent.click(await screen.findByRole('button', { name: /Retry this clip/ }))
+  expect(await screen.findByText('Waveform unavailable')).toBeVisible()
+  expect(getErrorToasts()).toContainEqual(expect.objectContaining({
+    message: 'Video unavailable',
+  }))
+  await waitFor(() => expect(roomGetAssetUrl).toHaveBeenCalledWith(clip.sourceRef))
+  fireEvent.click(screen.getByRole('button', { name: 'Reload Pack' }))
+  await waitFor(() => {
+    expect(container.querySelector('video')).toHaveAttribute(
+      'src', 'studio-media://room/preview?reload=1',
+    )
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src', 'studio-media://room/asset/retry.wav?reload=1',
+    )
+  })
+  expect(await screen.findByText('4.00s window')).toBeVisible()
+  expect(screen.getByLabelText('Video player')).toHaveTextContent(clip.caption)
+  expect(container.querySelector('video')?.currentTime).toBe(clip.timestampSeconds)
+  expect(screen.queryByText('Waveform unavailable')).toBeNull()
+  expect(
+    roomGetWaveform.mock.calls.filter(([id]) => id === clip.id),
+  ).toHaveLength(2)
+  expect(roomGetPreviewUrl).toHaveBeenCalledTimes(2)
+  expect(getRoom).toHaveBeenCalledOnce()
 })
 
 it('opens a joined session on the player’s first assigned line', async () => {
@@ -1206,10 +1363,26 @@ it('shows voice effects for an assigned multiplayer dialogue and saves a preset'
 })
 
 it('keeps room clip and recording playback exclusive', async () => {
+  const roomSetTakeGain = vi.fn(async () => undefined)
+  const roomGetEffectTakeUrl = vi.fn(
+    async () => 'studio-media://room/effect/boosted',
+  )
+  const playing = new WeakSet<HTMLMediaElement>()
+  vi.spyOn(HTMLMediaElement.prototype, 'paused', 'get').mockImplementation(
+    function (this: HTMLMediaElement) {
+      return !playing.has(this)
+    },
+  )
   const pause = vi
     .spyOn(HTMLMediaElement.prototype, 'pause')
-    .mockImplementation(() => undefined)
-  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    .mockImplementation(function (this: HTMLMediaElement) {
+      playing.delete(this)
+    })
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(
+    async function (this: HTMLMediaElement) {
+      playing.add(this)
+    },
+  )
   vi.stubGlobal(
     'requestAnimationFrame',
     vi.fn(() => 1),
@@ -1254,6 +1427,8 @@ it('keeps room clip and recording playback exclusive', async () => {
     roomGetPreviewUrl: async () => 'studio-media://room/preview',
     roomGetAssetUrl: async (ref: string) => `studio-media://room/asset/${ref}`,
     roomGetTakeUrl: async () => 'studio-media://room/take',
+    roomGetEffectTakeUrl,
+    roomSetTakeGain,
     roomGetWaveform: async () => ({
       original: [0, 0.5, 0],
       take: [0, 0.5, 0],
@@ -1268,6 +1443,15 @@ it('keeps room clip and recording playback exclusive', async () => {
       <RoomPage />
     </MemoryRouter>,
   )
+  const meter = await screen.findByLabelText(/Session voice level/)
+  const videoFrame = screen.getByLabelText('Video player')
+  expect(meter.parentElement).toBe(videoFrame.parentElement)
+  expect(videoFrame.contains(meter)).toBe(false)
+  const gainSlider = await screen.findByRole('slider', {
+    name: 'Recorded track volume',
+  })
+  expect(gainSlider).toHaveAttribute('min', '-24')
+  expect(gainSlider).toHaveAttribute('max', '24')
   const hearClip = await screen.findByRole('button', { name: 'Hear clip' })
   await waitFor(() => expect(hearClip).toBeEnabled())
   const playRecording = await screen.findByRole('button', {
@@ -1279,11 +1463,14 @@ it('keeps room clip and recording playback exclusive', async () => {
     'audio[src^="studio-media://room/asset/"]',
   )!
   pause.mockClear()
-  fireEvent.click(playRecording)
+  await act(async () => {
+    fireEvent.click(playRecording)
+  })
   expect(pause.mock.instances).toContain(originalAudio)
   const recordingAudio = container.querySelector<HTMLAudioElement>(
     'audio[src="studio-media://room/take"]',
   )!
+  expect(recordingAudio.paused).toBe(false)
   const pointer = container.querySelector('path[stroke="#b8ffea"]')!
   const startPosition = pointer.getAttribute('d')
   recordingAudio.currentTime = 0.5
@@ -1292,4 +1479,23 @@ it('keeps room clip and recording playback exclusive', async () => {
   pause.mockClear()
   fireEvent.click(screen.getByRole('button', { name: 'Hear clip' }))
   expect(pause.mock.instances).toContain(recordingAudio)
+  fireEvent.change(gainSlider, { target: { value: '12' } })
+  fireEvent.pointerUp(gainSlider)
+  await waitFor(() => expect(roomSetTakeGain).toHaveBeenCalledWith(take.id, 12))
+  await waitFor(() =>
+    expect(roomGetEffectTakeUrl).toHaveBeenCalledWith(
+      take.dialogueId,
+      take.id,
+      {
+        preset: 'original',
+        pitch: 0,
+        tone: 0,
+        texture: 0,
+        space: 0,
+        echo: 0,
+        mod: 0,
+      },
+      12,
+    ),
+  )
 })

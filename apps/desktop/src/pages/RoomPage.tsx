@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -26,11 +26,15 @@ import {
   type RoomState,
   type DiscoveredRoom,
   type RoomJoinInfo,
+  type RoomPlayer,
   type ImportProgress,
   type VoiceEffect,
+  type WaveformSnapshot,
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { RecordingStudio } from '@/components/RecordingStudio'
+import { AudioLevelMeter } from '@/components/AudioLevelMeter'
 import { WatchDubDialog } from '@/components/WatchDubDialog'
 import { VoiceEffectsPanel } from '@/components/VoiceEffectsPanel'
 import { OverlapWaveform } from '@/components/OverlapWaveform'
@@ -45,6 +49,7 @@ import {
 import { formatCueTime } from '@/lib/format-cue-time'
 
 type RoomInfo = { state: RoomState; playerId: string; address: string }
+const originalVoiceEffect = createVoiceEffect('original')
 
 function firstAssignedDialogueId(state: RoomState, playerId: string) {
   const roles = roomProjectForPlayer(state, playerId)?.enabledCharacterIds ?? []
@@ -57,16 +62,25 @@ function loadRoomWaveform(_projectId: string, dialogueId: string) {
   return window.studio.roomGetWaveform(dialogueId)
 }
 
+function roomResourceUrl(url: string, reloadVersion: number) {
+  if (!url || !reloadVersion) return url
+  const resource = new URL(url)
+  resource.searchParams.set('reload', String(reloadVersion))
+  return resource.href
+}
+
 export function RoomPage({
   embedded = false,
   modalOpen,
   onModalClose,
   onRoomInfoChange,
+  onRoomExit,
 }: {
   embedded?: boolean
   modalOpen?: boolean
   onModalClose?: () => void
   onRoomInfoChange?: (info: RoomInfo | null) => void
+  onRoomExit?: (message: string) => void
 } = {}) {
   const navigate = useNavigate()
   const MainElement = embedded ? 'div' : 'main'
@@ -107,9 +121,19 @@ export function RoomPage({
   } | null>(null)
   const [selectedJoinRoleIds, setSelectedJoinRoleIds] = useState<string[]>([])
   const [selectedJoinPackId, setSelectedJoinPackId] = useState('')
+  const [memberAction, setMemberAction] = useState<{
+    action: 'promote' | 'kick'
+    player: RoomPlayer
+  } | null>(null)
+  const onRoomExitRef = useRef(onRoomExit)
+  useEffect(() => {
+    onRoomExitRef.current = onRoomExit
+  }, [onRoomExit])
   const [copied, setCopied] = useState<'code' | 'invite' | null>(null)
   const [selectedDialogueId, setSelectedDialogueId] = useState('')
   const [previewUrl, setPreviewUrl] = useState('')
+  const [reloadVersion, setReloadVersion] = useState(0)
+  const [recordingActive, setRecordingActive] = useState(false)
   const [sourceAsset, setSourceAsset] = useState<{
     ref: string
     url: string
@@ -118,7 +142,6 @@ export function RoomPage({
     ref: string
     seconds: number
   } | null>(null)
-  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [voiceEffectOverrides, setVoiceEffectOverrides] = useState<
     Record<string, VoiceEffect>
@@ -131,6 +154,14 @@ export function RoomPage({
   const [fastMode, setFastMode] = useState(false)
   const [playbackSeconds, setPlaybackSeconds] = useState(0)
   const [liveTake, setLiveTake] = useState<LiveTakeWaveform | null>(null)
+  const [meterSnapshot, setMeterSnapshot] = useState<{
+    dialogueId: string
+    snapshot: WaveformSnapshot
+  } | null>(null)
+  const [liveLevel, setLiveLevel] = useState(0)
+  const [meterMode, setMeterMode] = useState<
+    'clip' | 'capture' | 'take' | null
+  >(null)
   const [showClips, setShowClips] = useState(true)
   const [onlyMyRoles, setOnlyMyRoles] = useState(false)
   const [characterFilter, setCharacterFilter] = useState('')
@@ -141,11 +172,21 @@ export function RoomPage({
   const audioRef = useRef<HTMLAudioElement>(null)
   const playheadFrameRef = useRef<number | null>(null)
   const playbackModeRef = useRef<'clip' | 'recording' | null>(null)
+  const setRoomPlaybackMode = useCallback(
+    (mode: 'clip' | 'capture' | 'take' | null) => {
+      playbackModeRef.current =
+        mode === 'clip' ? 'clip' : mode ? 'recording' : null
+      setMeterMode(mode)
+    },
+    [],
+  )
   const infoRef = useRef<RoomInfo | null>(null)
   const hasRoom = info !== null
 
   useEffect(() => {
+    let active = true
     void window.studio.getRoom().then((room) => {
+      if (!active) return
       if (room) {
         infoRef.current = room
         if (room.state.started)
@@ -158,8 +199,12 @@ export function RoomPage({
         setInfo(room)
       }
       setRoomLoaded(true)
+    }, (reason) => {
+      if (!active) return
+      setRoomLoaded(true)
+      reportError(reason)
     })
-    return window.studio.onRoomState((state) => {
+    const unsubscribe = window.studio.onRoomState((state, reason) => {
       setRoomLoaded(true)
       const current = infoRef.current
       if (!state || !current) {
@@ -167,6 +212,16 @@ export function RoomPage({
         setInfo(null)
         setCharacterFilter('')
         setVoiceEffectOverrides({})
+        setShowRolePicker(false)
+        setMemberAction(null)
+        if (reason === 'kicked' || reason === 'expired') {
+          const message =
+            reason === 'kicked'
+              ? 'The Host removed you from the room.'
+              : 'Your room connection ended. Open Multiplayer to join again.'
+          if (onRoomExitRef.current) onRoomExitRef.current(message)
+          else reportError(message)
+        }
         return
       }
       setVoiceEffectOverrides((overrides) => {
@@ -212,6 +267,10 @@ export function RoomPage({
       }
       setInfo(next)
     })
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -225,7 +284,7 @@ export function RoomPage({
     try {
       setDiscoveredRooms(await (window.studio.discoverRooms?.() ?? []))
     } catch (reason) {
-      setError(String(reason))
+      reportError(reason)
     } finally {
       setDiscovering(false)
     }
@@ -276,6 +335,12 @@ export function RoomPage({
   const ready = Boolean(info && state?.readyPlayerIds.includes(info.playerId))
   const connectedPlayers =
     state?.players.filter((player) => player.connected) ?? []
+  const firstRoleByPlayer = new Map<string, string>()
+  for (const character of state?.pack?.characters ?? []) {
+    const ownerId = state?.assignments[character.id]
+    if (ownerId && !firstRoleByPlayer.has(ownerId))
+      firstRoleByPlayer.set(ownerId, character.id)
+  }
   const allReady =
     connectedPlayers.length > 0 &&
     connectedPlayers.every(
@@ -295,8 +360,8 @@ export function RoomPage({
   const selectedVoiceEffect = selected
     ? (voiceEffectOverrides[selected.id] ??
       project?.voiceEffects?.[selected.id] ??
-      createVoiceEffect('original'))
-    : createVoiceEffect('original')
+      originalVoiceEffect)
+    : originalVoiceEffect
   const canRecord = Boolean(
     state &&
     info &&
@@ -307,6 +372,42 @@ export function RoomPage({
     project && !canRecord ? { ...project, enabledCharacterIds: [] } : project
   const selectedTakes =
     state?.takes.filter((take) => take.dialogueId === selected?.id) ?? []
+  const meterDialogueId = selected?.id
+  const handleMeterSnapshot = useCallback(
+    (snapshot: WaveformSnapshot) => {
+      if (meterDialogueId)
+        setMeterSnapshot({ dialogueId: meterDialogueId, snapshot })
+    },
+    [meterDialogueId],
+  )
+  const meterData =
+    meterSnapshot && meterSnapshot.dialogueId === meterDialogueId
+      ? meterSnapshot.snapshot
+      : null
+  const meterPeaks =
+    meterMode === 'clip'
+      ? meterData?.original
+      : meterMode === 'take'
+        ? meterData?.take
+        : null
+  const meterIndex =
+    meterData && selected
+      ? Math.floor(
+          ((playbackSeconds -
+            selected.timestampSeconds -
+            meterData.windowStartSeconds) /
+            meterData.windowSeconds) *
+            (meterPeaks?.length ?? 0),
+        )
+      : -1
+  const meterAmplitude =
+    meterMode === 'capture' ? liveLevel : (meterPeaks?.[meterIndex] ?? 0)
+  const meterGain =
+    meterMode === 'take'
+      ? 10 ** ((selectedTakes.find((take) => take.selected)?.gainDb ?? 0) / 20)
+      : 1
+  const meterDb =
+    meterAmplitude > 0 ? 20 * Math.log10(meterAmplitude * meterGain) : -60
   const visibleDialogues = (state?.pack?.dialogues ?? []).filter((dialogue) =>
     characterFilter
       ? dialogue.characterIds.includes(characterFilter)
@@ -366,7 +467,7 @@ export function RoomPage({
         setLocalPacks(packs)
         setSelectedPackId((current) => current || packs[0]?.id || '')
       },
-      (reason) => setError(String(reason)),
+      (reason) => reportError(reason),
     )
     if (window.studio.listProjects) {
       void (async () => {
@@ -386,7 +487,7 @@ export function RoomPage({
           setLocalProjects(projects)
           setLocalRecordingCounts(Object.fromEntries(counts))
         } catch (reason) {
-          setError(String(reason))
+          reportError(reason)
         }
       })()
     }
@@ -409,16 +510,16 @@ export function RoomPage({
     let active = true
     void window.studio.roomGetPreviewUrl().then(
       (url) => {
-        if (active) setPreviewUrl(url)
+        if (active) setPreviewUrl(roomResourceUrl(url, reloadVersion))
       },
       (reason) => {
-        if (active) setError(String(reason))
+        if (active) reportError(reason)
       },
     )
     return () => {
       active = false
     }
-  }, [packId, localPackReady])
+  }, [packId, localPackReady, reloadVersion])
 
   const sourceRef = selected?.sourceRef
   const handleSourceDuration = useCallback(
@@ -441,24 +542,45 @@ export function RoomPage({
     let active = true
     void window.studio.roomGetAssetUrl(sourceRef).then(
       (url) => {
-        if (active) setSourceAsset({ ref: sourceRef, url })
+        if (active)
+          setSourceAsset({
+            ref: sourceRef,
+            url: roomResourceUrl(url, reloadVersion),
+          })
       },
       (reason) => {
-        if (active) setError(String(reason))
+        if (active) reportError(reason)
       },
     )
     return () => {
       active = false
     }
-  }, [sourceRef, localPackReady])
+  }, [sourceRef, localPackReady, reloadVersion])
+
+  const resolveTakeUrl = useCallback(
+    (takeId: string) =>
+      window.studio.roomGetTakeUrl(takeId)
+        .then((url) => roomResourceUrl(url, reloadVersion)),
+    [reloadVersion],
+  )
+  const resolveEffectTakeUrl = useCallback(
+    (
+      dialogueId: string,
+      takeId: string,
+      effect: VoiceEffect,
+      ...gain: [gainDb?: number]
+    ) =>
+      window.studio.roomGetEffectTakeUrl(dialogueId, takeId, effect, ...gain)
+        .then((url) => roomResourceUrl(url, reloadVersion)),
+    [reloadVersion],
+  )
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true)
-    setError('')
     try {
       await action()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -481,7 +603,7 @@ export function RoomPage({
         delete remaining[dialogueId]
         return remaining
       })
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     })
   }
 
@@ -531,10 +653,11 @@ export function RoomPage({
         targetCode,
         playerName,
       )
-      if (details.started) throw new Error('Room has already started')
       setLocalPacks(await window.studio.listPacks())
       setSelectedJoinRoleIds([])
-      setSelectedJoinPackId('')
+      setSelectedJoinPackId(
+        details.rejoining ? (details.matchingPacks[0]?.id ?? '') : '',
+      )
       setJoinTarget({ address: targetAddress, code: targetCode, details })
     })
   }
@@ -548,7 +671,8 @@ export function RoomPage({
         )
       )
         throw new Error('Download or select the matching Dub Pack first')
-      if (!selectedJoinRoleIds.length)
+      const { started, rejoining } = joinTarget.details
+      if (!started && !rejoining && !selectedJoinRoleIds.length)
         throw new Error('Choose at least one available role')
       let room: RoomInfo
       try {
@@ -557,7 +681,8 @@ export function RoomPage({
           joinTarget.details.code,
           name.trim(),
           selectedJoinPackId,
-          selectedJoinRoleIds,
+          rejoining ? undefined : selectedJoinRoleIds,
+          ...(rejoining ? [true] : []),
         )
       } catch (reason) {
         try {
@@ -630,7 +755,7 @@ export function RoomPage({
       await window.studio.copyRoomDetails(kind)
       setCopied(kind)
     } catch {
-      setError(
+      reportError(
         'Could not copy room details. Share the code and host address shown here.',
       )
     }
@@ -639,11 +764,68 @@ export function RoomPage({
     await run(async () => {
       setShowRolePicker(false)
       if (isHost) await window.studio.roomClose()
-      else await window.studio.roomLeave()
+      else {
+        const result = await window.studio.roomLeave()
+        if (result?.historySaved === false)
+          reportError('Some room recordings could not be saved to this device.')
+      }
       setSelectedDialogueId('')
       infoRef.current = null
       setInfo(null)
     })
+  }
+  function renderMemberActions(player: RoomPlayer) {
+    if (!isHost || player.id === info?.playerId) return null
+    const popoverId = `room-actions-${player.id}`
+    return (
+      <>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="shrink-0"
+          aria-label={`Actions for ${player.displayName}`}
+          popoverTarget={popoverId}
+          disabled={busy}
+        >
+          Actions <ChevronDown aria-hidden="true" />
+        </Button>
+        <div
+          popover="auto"
+          id={popoverId}
+          className="multiplayer-member-actions rounded-lg border border-border bg-card p-1 text-foreground shadow-lg"
+        >
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="w-full justify-start"
+            aria-label={`Promote ${player.displayName} to Host`}
+            disabled={busy || !player.connected || player.packReady === false}
+            onClick={(event) => {
+              event.currentTarget.parentElement?.hidePopover?.()
+              setMemberAction({ action: 'promote', player })
+            }}
+          >
+            Promote to Host
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="w-full justify-start text-red-300"
+            aria-label={`Kick ${player.displayName}`}
+            disabled={busy}
+            onClick={(event) => {
+              event.currentTarget.parentElement?.hidePopover?.()
+              setMemberAction({ action: 'kick', player })
+            }}
+          >
+            Kick
+          </Button>
+        </div>
+      </>
+    )
   }
   async function openWatch() {
     await effectSaveRef.current
@@ -652,13 +834,24 @@ export function RoomPage({
   const stopMedia = useCallback(() => {
     videoRef.current?.pause()
     audioRef.current?.pause()
-    playbackModeRef.current = null
+    setRoomPlaybackMode(null)
     if (playheadFrameRef.current !== null)
       cancelAnimationFrame(playheadFrameRef.current)
     playheadFrameRef.current = null
     setClipPlaying(false)
-  }, [])
+  }, [setRoomPlaybackMode])
   useEffect(() => stopMedia, [stopMedia])
+  function reloadPack() {
+    if (recordingActive) return
+    stopMedia()
+    setPreviewUrl('')
+    setSourceAsset(null)
+    setSourceLength(null)
+    setMeterSnapshot(null)
+    setLiveTake(null)
+    setPlaybackSeconds(selectedCueSeconds ?? 0)
+    setReloadVersion((version) => version + 1)
+  }
   const startPlayheadLoop = (position: () => number, end?: number) => {
     if (playheadFrameRef.current !== null)
       cancelAnimationFrame(playheadFrameRef.current)
@@ -686,7 +879,7 @@ export function RoomPage({
     video.currentTime = selected.timestampSeconds
     audio.currentTime = 0
     setPlaybackSeconds(selected.timestampSeconds)
-    playbackModeRef.current = 'clip'
+    setRoomPlaybackMode('clip')
     setClipPlaying(true)
     void Promise.all([...(playClipVideo ? [video.play()] : []), audio.play()])
       .then(() => {
@@ -698,7 +891,7 @@ export function RoomPage({
       })
       .catch((reason) => {
         stopMedia()
-        setError(String(reason))
+        reportError(reason)
       })
   }
 
@@ -721,12 +914,9 @@ export function RoomPage({
             : 'mx-auto max-w-[1200px] space-y-6 px-5 py-6 sm:px-8'
         }
       >
-        {error && !roomModalOpen && (
-          <p
-            role="alert"
-            className="rounded-lg border border-red-500 p-3 text-red-200"
-          >
-            {playerError(error)}
+        {myPlayer?.connected === false && (
+          <p role="status" className="text-sm text-muted-foreground">
+            Reconnecting to the room…
           </p>
         )}
         {!info && joinTarget && roomModalOpen ? (
@@ -742,7 +932,11 @@ export function RoomPage({
           >
             <div className="multiplayer-heading">
               <h1>
-                {selectedJoinPackId ? 'CHOOSE YOUR ROLES' : 'CHOOSE YOUR PACK'}
+                {joinTarget.details.rejoining
+                  ? 'REJOIN ROOM'
+                  : selectedJoinPackId
+                    ? 'CHOOSE YOUR ROLES'
+                    : 'CHOOSE YOUR PACK'}
               </h1>
               <button
                 type="button"
@@ -752,11 +946,6 @@ export function RoomPage({
                 <X aria-hidden="true" />
               </button>
             </div>
-            {error && (
-              <p role="alert" className="mt-3 text-sm text-red-300">
-                {playerError(error)}
-              </p>
-            )}
             <div className="multiplayer-form">
               <div className="multiplayer-pack-line multiplayer-lobby-pack">
                 <div className="multiplayer-lobby-pack-details">
@@ -812,7 +1001,7 @@ export function RoomPage({
                     : 'Preparing pack download…'}
                 </p>
               )}
-              {selectedJoinPackId && (
+              {selectedJoinPackId && !joinTarget.details.rejoining && (
                 <>
                   <div className="multiplayer-role-title">
                     YOUR ROLES · SELECT ONE OR MORE
@@ -852,14 +1041,31 @@ export function RoomPage({
                       )
                     })}
                   </div>
-                  <Button
-                    className="multiplayer-primary"
-                    disabled={busy || selectedJoinRoleIds.length === 0}
-                    onClick={() => void confirmJoin()}
-                  >
-                    {busy ? 'JOINING…' : 'JOIN ROOM'}
-                  </Button>
                 </>
+              )}
+              {selectedJoinPackId &&
+                joinTarget.details.started &&
+                !joinTarget.details.rejoining && (
+                  <p className="multiplayer-hint">
+                    This session is in progress. You can join now and choose
+                    available roles later.
+                  </p>
+                )}
+              {selectedJoinPackId && (
+                <Button
+                  className="multiplayer-primary"
+                  disabled={
+                    busy ||
+                    (!joinTarget.details.started &&
+                      !joinTarget.details.rejoining &&
+                      !selectedJoinRoleIds.length)
+                  }
+                  onClick={() => void confirmJoin()}
+                >
+                  {busy
+                    ? 'JOINING…'
+                    : joinTarget.details.rejoining ? 'REJOIN ROOM' : 'JOIN ROOM'}
+                </Button>
               )}
             </div>
           </dialog>
@@ -884,11 +1090,6 @@ export function RoomPage({
                 <X aria-hidden="true" />
               </button>
             </div>
-            {error && (
-              <p role="alert" className="mt-3 text-sm text-red-300">
-                {playerError(error)}
-              </p>
-            )}
             <div
               className="multiplayer-tabs"
               role="tablist"
@@ -1190,11 +1391,6 @@ export function RoomPage({
                 <X aria-hidden="true" />
               </button>
             </div>
-            {error && (
-              <p role="alert" className="mt-3 text-sm text-red-300">
-                {playerError(error)}
-              </p>
-            )}
             <p className="multiplayer-lobby-message">
               Share the room details.{' '}
               {state.pack?.characters.filter(
@@ -1229,7 +1425,10 @@ export function RoomPage({
               <>
                 <div className="multiplayer-pack-line multiplayer-lobby-pack">
                   <div className="multiplayer-pack-art">
-                    <RoomPackThumbnail assetRef={state.pack.iconRef} />
+                    <RoomPackThumbnail
+                      assetRef={state.pack.iconRef}
+                      reloadVersion={reloadVersion}
+                    />
                   </div>
                   <div className="multiplayer-lobby-pack-details">
                     <small>VOICE PACK</small>
@@ -1239,7 +1438,7 @@ export function RoomPage({
                       {state.pack.characters.length} roles
                     </span>
                   </div>
-                  {!state.started && (
+                  {localPackReady && (
                     <Button
                       className="multiplayer-choose-roles"
                       variant="outline"
@@ -1277,6 +1476,7 @@ export function RoomPage({
                         >
                           <RoomPackThumbnail
                             assetRef={roleImageRef(state.pack!, character.id)}
+                            reloadVersion={reloadVersion}
                           />
                         </span>
                         <span className="multiplayer-lobby-role-copy">
@@ -1284,8 +1484,16 @@ export function RoomPage({
                             {character.name} {owner?.isHost ? '⚑' : ''}
                           </strong>
                           <small>{clips} CLIPS</small>
-                          {owner && <em>{owner.displayName}</em>}
+                          {owner && (
+                            <em>
+                              {owner.displayName}
+                              {!owner.connected && ' (Disconnected)'}
+                            </em>
+                          )}
                         </span>
+                        {owner &&
+                          firstRoleByPlayer.get(owner.id) === character.id &&
+                          renderMemberActions(owner)}
                         <span
                           className={`multiplayer-role-progress ${recorded === clips ? 'complete' : ''}`}
                           aria-label={`${character.name}: ${recorded} of ${clips} lines recorded`}
@@ -1295,6 +1503,21 @@ export function RoomPage({
                       </div>
                     )
                   })}
+                  {state.players
+                    .filter((player) => !firstRoleByPlayer.has(player.id))
+                    .map((player) => (
+                      <div className="multiplayer-lobby-role" key={player.id}>
+                        <span className="multiplayer-lobby-role-copy">
+                          <strong>
+                            {player.displayName} {player.isHost ? '⚑' : ''}
+                          </strong>
+                          <small>
+                            {player.connected ? 'No assigned roles' : 'Disconnected'}
+                          </small>
+                        </span>
+                        {renderMemberActions(player)}
+                      </div>
+                    ))}
                 </div>
               </>
             ) : (
@@ -1452,19 +1675,30 @@ export function RoomPage({
                 )}
                 {state.started && (
                   <>
-                    <div className="mb-7 pt-8">
-                      <p className="text-xs uppercase tracking-[0.18em] text-primary">
-                        VOICE PACK / RECORDING SESSION
-                      </p>
-                      <h1 className="mt-2 text-3xl font-semibold">
-                        {state.pack.metadata.title}
-                      </h1>
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        {state.pack.dialogues.length} dialogue instances ·{' '}
-                        {state.pack.characters.length} characters ·{' '}
-                        {myCompleted}/{myDialogues.length} assigned lines
-                        complete
-                      </p>
+                    <div className="mb-7 flex flex-wrap items-start justify-between gap-3 pt-8">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-primary">
+                          VOICE PACK / RECORDING SESSION
+                        </p>
+                        <h1 className="mt-2 text-3xl font-semibold">
+                          {state.pack.metadata.title}
+                        </h1>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {state.pack.dialogues.length} dialogue instances ·{' '}
+                          {state.pack.characters.length} characters ·{' '}
+                          {myCompleted}/{myDialogues.length} assigned lines
+                          complete
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={recordingActive}
+                        onClick={reloadPack}
+                      >
+                        <RefreshCw aria-hidden="true" /> Reload Pack
+                      </Button>
                     </div>
                     <div className="workspace-grid grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
                       <section
@@ -1576,101 +1810,113 @@ export function RoomPage({
                         )}
                       </section>
                       <section className="order-1 space-y-4 lg:col-start-1 lg:row-start-1">
-                        <div
-                          aria-label="Video player"
-                          className="workspace-monitor overflow-hidden rounded-2xl border border-border bg-black"
-                        >
-                          <div className="relative aspect-video w-full bg-black">
-                            <video
-                              ref={videoRef}
-                              src={previewUrl}
-                              muted
-                              playsInline
-                              preload="metadata"
-                              className="absolute inset-0 h-full w-full object-contain"
-                              onLoadedMetadata={(event) => {
-                                if (selected)
-                                  event.currentTarget.currentTime =
-                                    selected.timestampSeconds
-                              }}
-                              onTimeUpdate={(event) => {
-                                const video = event.currentTarget
-                                if (
-                                  playbackModeRef.current &&
-                                  selected &&
-                                  sourceDuration > 0
-                                ) {
-                                  const end =
-                                    selected.timestampSeconds + sourceDuration
-                                  if (video.currentTime >= end) {
-                                    video.pause()
-                                    if (
-                                      Math.abs(video.currentTime - end) > 0.02
-                                    )
-                                      video.currentTime = end
-                                  }
-                                } else if (!playbackModeRef.current)
-                                  setPlaybackSeconds(video.currentTime)
-                              }}
-                            />
-                            <audio
-                              ref={audioRef}
-                              src={sourceUrl}
-                              onLoadedMetadata={(event) =>
-                                setSourceLength({
-                                  ref: sourceRef!,
-                                  seconds: event.currentTarget.duration,
-                                })
-                              }
-                              onEnded={() => {
-                                if (playbackModeRef.current === 'clip') {
+                        <div className="flex items-stretch gap-3">
+                          <AudioLevelMeter levelDb={meterDb} />
+                          <div
+                            aria-label="Video player"
+                            className="workspace-monitor min-w-0 flex-1 overflow-hidden bg-black"
+                          >
+                            <div className="relative aspect-video w-full bg-black">
+                              <video
+                                ref={videoRef}
+                                src={previewUrl || undefined}
+                                onError={() => {
+                                  if (previewUrl)
+                                    reportError('The video preview could not load. Use Reload Pack to retry.')
+                                }}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="absolute inset-0 h-full w-full object-contain"
+                                onLoadedMetadata={(event) => {
                                   if (selected)
-                                    setPlaybackSeconds(
-                                      selected.timestampSeconds +
-                                        sourceDuration,
-                                    )
-                                  stopMedia()
+                                    event.currentTarget.currentTime =
+                                      selected.timestampSeconds
+                                }}
+                                onTimeUpdate={(event) => {
+                                  const video = event.currentTarget
+                                  if (
+                                    playbackModeRef.current &&
+                                    selected &&
+                                    sourceDuration > 0
+                                  ) {
+                                    const end =
+                                      selected.timestampSeconds + sourceDuration
+                                    if (video.currentTime >= end) {
+                                      video.pause()
+                                      if (
+                                        Math.abs(video.currentTime - end) > 0.02
+                                      )
+                                        video.currentTime = end
+                                    }
+                                  } else if (!playbackModeRef.current)
+                                    setPlaybackSeconds(video.currentTime)
+                                }}
+                              />
+                              <audio
+                                ref={audioRef}
+                                src={sourceUrl || undefined}
+                                onError={() => {
+                                  if (sourceUrl)
+                                    reportError('The original clip audio could not load. Use Reload Pack to retry.')
+                                }}
+                                onLoadedMetadata={(event) =>
+                                  setSourceLength({
+                                    ref: sourceRef!,
+                                    seconds: event.currentTarget.duration,
+                                  })
                                 }
-                              }}
-                            />
-                            {selected && (
-                              <>
-                                <div className="pointer-events-none absolute left-4 top-4 rounded border border-white/25 bg-black/75 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-white">
-                                  <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
-                                  Cue{' '}
-                                  <span className="text-amber-300">
-                                    {formatCueTime(playbackSeconds)}
-                                  </span>
-                                </div>
-                                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/75 to-transparent px-5 pb-6 pt-16 text-center">
-                                  <div className="flex justify-center gap-2">
-                                    {selected.characterIds.map((id) => (
-                                      <span
-                                        key={id}
-                                        className="bg-primary px-2 py-0.5 text-[10px] font-black uppercase text-primary-foreground"
-                                      >
-                                        {state.pack?.characters.find(
-                                          (character) => character.id === id,
-                                        )?.name ?? id}
-                                      </span>
-                                    ))}
+                                onEnded={() => {
+                                  if (playbackModeRef.current === 'clip') {
+                                    if (selected)
+                                      setPlaybackSeconds(
+                                        selected.timestampSeconds +
+                                          sourceDuration,
+                                      )
+                                    stopMedia()
+                                  }
+                                }}
+                              />
+                              {selected && (
+                                <>
+                                  <div className="pointer-events-none absolute left-4 top-4 rounded border border-white/25 bg-black/75 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-white">
+                                    <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
+                                    Cue{' '}
+                                    <span className="text-amber-300">
+                                      {formatCueTime(playbackSeconds)}
+                                    </span>
                                   </div>
-                                  <p className="mt-2 text-lg font-black text-white sm:text-2xl">
-                                    {selected.caption || selected.sourceRef}
-                                  </p>
-                                </div>
-                              </>
-                            )}
+                                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/75 to-transparent px-5 pb-6 pt-16 text-center">
+                                    <div className="flex justify-center gap-2">
+                                      {selected.characterIds.map((id) => (
+                                        <span
+                                          key={id}
+                                          className="bg-primary px-2 py-0.5 text-[10px] font-black uppercase text-primary-foreground"
+                                        >
+                                          {state.pack?.characters.find(
+                                            (character) => character.id === id,
+                                          )?.name ?? id}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <p className="mt-2 text-lg font-black text-white sm:text-2xl">
+                                      {selected.caption || selected.sourceRef}
+                                    </p>
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
                         </div>
                         {selected && (
                           <OverlapWaveform
-                            key={`${selected.id}:${selectedTakes.find((take) => take.selected)?.id ?? 'none'}`}
+                            key={`${reloadVersion}:${selected.id}:${selectedTakes.find((take) => take.selected)?.id ?? 'none'}`}
                             projectId={project.id}
                             dialogueId={selected.id}
                             cueSeconds={selected.timestampSeconds}
                             playbackSeconds={playbackSeconds}
                             onSourceDuration={handleSourceDuration}
+                            onSnapshot={handleMeterSnapshot}
                             loadWaveform={loadRoomWaveform}
                             liveTakePeaks={
                               liveTake?.dialogueId === selected.id
@@ -1683,7 +1929,7 @@ export function RoomPage({
                       <aside className="workspace-sidebar order-3 lg:col-start-2 lg:row-start-1 lg:row-span-2">
                         {selected && recordingProject && (
                           <RecordingStudio
-                            key={selected.id}
+                            key={`${reloadVersion}:${selected.id}`}
                             project={recordingProject}
                             dialogue={selected}
                             takes={selectedTakes}
@@ -1692,11 +1938,12 @@ export function RoomPage({
                             }}
                             onHearClip={hearClip}
                             onStopClip={stopMedia}
+                            onRecordingActivityChange={setRecordingActive}
                             clipPlaying={clipPlaying}
                             canHearClip={Boolean(sourceUrl && previewUrl)}
                             maxDurationSeconds={sourceDuration || null}
                             onRecordingStart={() => {
-                              playbackModeRef.current = 'recording'
+                              setRoomPlaybackMode('capture')
                               setLiveTake(newLiveTakeWaveform(selected.id))
                               const cue = selected.timestampSeconds
                               const startedAt = performance.now()
@@ -1716,18 +1963,18 @@ export function RoomPage({
                                 audioRef.current.currentTime = 0
                                 void audioRef.current
                                   .play()
-                                  .catch((reason) => setError(String(reason)))
+                                  .catch((reason) => reportError(reason))
                               }
                               if (playClipVideo && videoRef.current) {
                                 videoRef.current.currentTime =
                                   selected.timestampSeconds
                                 void videoRef.current
                                   .play()
-                                  .catch((reason) => setError(String(reason)))
+                                  .catch((reason) => reportError(reason))
                               }
                             }}
                             onPreRollStart={() => {
-                              playbackModeRef.current = 'recording'
+                              setRoomPlaybackMode('capture')
                               const cue = selected.timestampSeconds
                               const startedAt = performance.now()
                               setPlaybackSeconds(
@@ -1756,7 +2003,8 @@ export function RoomPage({
                                 selected.timestampSeconds + relativeSeconds,
                               )
                             }
-                            onRecordingSample={(elapsedSeconds, amplitude) =>
+                            onRecordingSample={(elapsedSeconds, amplitude) => {
+                              setLiveLevel(amplitude)
                               setLiveTake((current) =>
                                 current?.dialogueId === selected.id
                                   ? appendLiveSample(
@@ -1770,10 +2018,10 @@ export function RoomPage({
                                     )
                                   : current,
                               )
-                            }
+                            }}
                             onPlayRecording={async () => {
                               stopMedia()
-                              playbackModeRef.current = 'recording'
+                              setRoomPlaybackMode('take')
                               if (videoRef.current) {
                                 videoRef.current.currentTime =
                                   selected.timestampSeconds
@@ -1781,10 +2029,13 @@ export function RoomPage({
                               }
                             }}
                             onSaveTake={window.studio.roomUploadTake}
-                            onResolveTakeUrl={window.studio.roomGetTakeUrl}
-                            onResolveEffectTakeUrl={
-                              window.studio.roomGetEffectTakeUrl
+                            onUpdateTakeGain={
+                              canRecord
+                                ? window.studio.roomSetTakeGain
+                                : undefined
                             }
+                            onResolveTakeUrl={resolveTakeUrl}
+                            onResolveEffectTakeUrl={resolveEffectTakeUrl}
                             voiceEffect={selectedVoiceEffect}
                             clipPosition={selectedIndex + 1}
                             clipCount={state.pack.dialogues.length}
@@ -1867,6 +2118,7 @@ export function RoomPage({
                 )}
                 {state.project && (
                   <WatchDubDialog
+                    key={reloadVersion}
                     project={state.project}
                     pack={state.pack}
                     takes={state.takes}
@@ -1894,6 +2146,30 @@ export function RoomPage({
           </>
         )}
       </div>
+      {memberAction && isHost && roomModalOpen && (
+        <ConfirmDialog
+          title={
+            memberAction.action === 'promote'
+              ? 'Transfer Host controls?'
+              : 'Kick room member?'
+          }
+          description={
+            memberAction.action === 'promote'
+              ? `${memberAction.player.displayName} will become the Host. Keep this app open on the computer that created the room.`
+              : `${memberAction.player.displayName} will leave the room and their roles will become available. Their saved takes will stay in the project.`
+          }
+          confirmLabel={memberAction.action === 'promote' ? 'Promote' : 'Kick'}
+          onCancel={() => setMemberAction(null)}
+          onConfirm={() => {
+            setMemberAction(null)
+            void run(() =>
+              memberAction.action === 'promote'
+                ? window.studio.roomPromoteMember(memberAction.player.id)
+                : window.studio.roomKickMember(memberAction.player.id),
+            )
+          }}
+        />
+      )}
       {canShowRolePicker && info && state?.pack && (
         <dialog
           ref={rolePickerRef}
@@ -1915,11 +2191,6 @@ export function RoomPage({
               <X aria-hidden="true" />
             </button>
           </div>
-          {error && (
-            <p role="alert" className="mt-3 text-sm text-red-300">
-              {playerError(error)}
-            </p>
-          )}
           <div className="multiplayer-form">
             <div className="multiplayer-role-title">
               YOUR ROLES · SELECT ONE OR MORE
@@ -1940,6 +2211,7 @@ export function RoomPage({
                     <span className="multiplayer-role-avatar">
                       <RoomPackThumbnail
                         assetRef={roleImageRef(state.pack!, character.id)}
+                        reloadVersion={reloadVersion}
                       />
                     </span>
                     <span>
@@ -1980,14 +2252,20 @@ function roleImageRef(pack: DubPack, characterId: string): string | undefined {
   )
 }
 
-function RoomPackThumbnail({ assetRef }: { assetRef?: string }) {
+function RoomPackThumbnail({
+  assetRef,
+  reloadVersion,
+}: {
+  assetRef?: string
+  reloadVersion: number
+}) {
   const [url, setUrl] = useState('')
   useEffect(() => {
     if (!assetRef) return
     let active = true
     void window.studio.roomGetAssetUrl(assetRef).then(
       (value) => {
-        if (active) setUrl(value)
+        if (active) setUrl(roomResourceUrl(value, reloadVersion))
       },
       () => {
         if (active) setUrl('')
@@ -1996,6 +2274,6 @@ function RoomPackThumbnail({ assetRef }: { assetRef?: string }) {
     return () => {
       active = false
     }
-  }, [assetRef])
+  }, [assetRef, reloadVersion])
   return url ? <img src={url} alt="" /> : <Film aria-hidden="true" />
 }

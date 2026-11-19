@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, CheckCircle2, FolderOpen, Film } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
@@ -30,15 +30,16 @@ export function ExportPage() {
   const [message, setMessage] = useState('')
   const [result, setResult] = useState<ExportResult | null>(null)
   const [driveConnected, setDriveConnected] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [projectUnavailable, setProjectUnavailable] = useState(false)
 
   useEffect(() => {
     let active = true
     if (!projectId) return
     if (googleDriveExportsEnabled)
-      window.studio.getDriveStatus().then((status) => {
-        if (active) setDriveConnected(status.connected)
-      })
+      void window.studio.getDriveStatus().then(
+        (status) => { if (active) setDriveConnected(status.connected) },
+        (reason) => { if (active) reportError(reason) },
+      )
     Promise.all([
       window.studio.listProjects(),
       window.studio.listPacks(),
@@ -49,7 +50,8 @@ export function ExportPage() {
         const foundProject = projects.find((item) => item.id === projectId)
         const foundPack = packs.find((item) => item.id === foundProject?.packId)
         if (!foundProject || !foundPack) {
-          setError('Project or Dub Pack could not be found.')
+          setProjectUnavailable(true)
+          reportError('Project or Dub Pack could not be found.')
           return
         }
         setProject(foundProject)
@@ -61,7 +63,9 @@ export function ExportPage() {
         }))
       },
       (reason) => {
-        if (active) setError(String(reason))
+        if (!active) return
+        setProjectUnavailable(true)
+        reportError(reason)
       },
     )
     const unsubscribe = window.studio.onExportProgress((update) => {
@@ -83,7 +87,6 @@ export function ExportPage() {
   async function startExport() {
     if (!project) return
     setBusy(true)
-    setError(null)
     setResult(null)
     setProgress(0)
     setMessage(
@@ -99,7 +102,7 @@ export function ExportPage() {
         if (updated) setProject(updated)
       } else setMessage('Export canceled')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
       setMessage('Export failed')
     } finally {
       setBusy(false)
@@ -110,9 +113,8 @@ export function ExportPage() {
     if (!project) return
     try {
       await window.studio.revealExport(project.id)
-      setError(null)
     } catch (reason) {
-      setError(String(reason))
+      reportError(reason)
     }
   }
 
@@ -132,11 +134,8 @@ export function ExportPage() {
           </p>
           <h1 className="text-4xl font-semibold">Export video</h1>
           {!project || !pack || !timeline ? (
-            <p
-              className={`mt-8 ${error ? 'text-red-300' : 'text-muted-foreground'}`}
-              role={error ? 'alert' : undefined}
-            >
-              {error ? playerError(error) : 'Loading project…'}
+            <p className="mt-8 text-muted-foreground">
+              {projectUnavailable ? 'Project unavailable' : 'Loading project…'}
             </p>
           ) : (
             <div className="mt-9 grid gap-6 lg:grid-cols-[1.3fr_1fr]">
@@ -320,14 +319,6 @@ export function ExportPage() {
                   <Button variant="outline" onClick={() => void reveal()}>
                     <FolderOpen aria-hidden="true" /> Open last export folder
                   </Button>
-                )}
-                {error && (
-                  <p
-                    role="alert"
-                    className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
-                  >
-                    {playerError(error)}
-                  </p>
                 )}
               </div>
               <section className="rounded-2xl border border-border bg-card p-6">

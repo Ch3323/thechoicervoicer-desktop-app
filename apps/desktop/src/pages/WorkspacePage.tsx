@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ListFilter, X } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
@@ -13,11 +13,13 @@ import {
   type DubbingProject,
   type RecordingTake,
   type VoiceEffect,
+  type WaveformSnapshot,
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { BrandLockup } from '@/components/BrandLockup'
 import { Switch } from '@/components/ui/switch'
 import { RecordingStudio } from '@/components/RecordingStudio'
+import { AudioLevelMeter } from '@/components/AudioLevelMeter'
 import { OverlapWaveform } from '@/components/OverlapWaveform'
 import { PackThumbnail } from '@/components/PackThumbnail'
 import { WatchDubDialog } from '@/components/WatchDubDialog'
@@ -60,6 +62,13 @@ export function WorkspacePage({
     null,
   )
   const previewModeRef = useRef<'source' | 'capture' | 'take' | null>(null)
+  const [meterMode, setMeterMode] = useState<
+    'source' | 'capture' | 'take' | null
+  >(null)
+  function setPreviewMode(mode: 'source' | 'capture' | 'take' | null) {
+    previewModeRef.current = mode
+    setMeterMode(mode)
+  }
   const [project, setProject] = useState<DubbingProject | null>(null)
   const [pack, setPack] = useState<DubPack | null>(null)
   const [takes, setTakes] = useState<RecordingTake[]>([])
@@ -83,10 +92,15 @@ export function WorkspacePage({
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackSeconds, setPlaybackSeconds] = useState(0)
   const [liveTake, setLiveTake] = useState<LiveTakeWaveform | null>(null)
+  const [meterSnapshot, setMeterSnapshot] = useState<{
+    dialogueId: string
+    snapshot: WaveformSnapshot
+  } | null>(null)
+  const [liveLevel, setLiveLevel] = useState(0)
   const [onlyMyRoles, setOnlyMyRoles] = useState(false)
   const [characterFilter, setCharacterFilter] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [projectUnavailable, setProjectUnavailable] = useState(false)
+  const [previewUnavailable, setPreviewUnavailable] = useState(false)
   const [watchOpen, setWatchOpen] = useState(false)
   const [playOriginalDuringRecording, setPlayOriginalDuringRecording] =
     useState(false)
@@ -102,7 +116,8 @@ export function WorkspacePage({
         const foundProject = projects.find((item) => item.id === projectId)
         const foundPack = packs.find((item) => item.id === foundProject?.packId)
         if (!foundProject || !foundPack) {
-          setError('Project or Dub Pack could not be found.')
+          setProjectUnavailable(true)
+          reportError('Project or Dub Pack could not be found.')
           return
         }
         setProject(foundProject)
@@ -113,12 +128,14 @@ export function WorkspacePage({
             if (active) setTakes(items)
           },
           (reason) => {
-            if (active) setError(String(reason))
+            if (active) reportError(reason)
           },
         )
       },
       (reason) => {
-        if (active) setError(String(reason))
+        if (!active) return
+        setProjectUnavailable(true)
+        reportError(reason)
       },
     )
     return () => {
@@ -131,10 +148,14 @@ export function WorkspacePage({
     let active = true
     window.studio.getPreviewUrl(pack.id).then(
       (url) => {
-        if (active) setPreviewUrl(url)
+        if (!active) return
+        setPreviewUnavailable(false)
+        setPreviewUrl(url)
       },
       (reason) => {
-        if (active) setPreviewError(String(reason))
+        if (!active) return
+        setPreviewUnavailable(true)
+        reportError(reason, 'The video preview is unavailable.')
       },
     )
     return () => {
@@ -191,6 +212,43 @@ export function WorkspacePage({
     },
     [selected],
   )
+  const meterDialogueId = selected?.id
+  const handleMeterSnapshot = useCallback(
+    (snapshot: WaveformSnapshot) => {
+      if (meterDialogueId)
+        setMeterSnapshot({ dialogueId: meterDialogueId, snapshot })
+    },
+    [meterDialogueId],
+  )
+  const selectedTakeForMeter = takes.find(
+    (take) => take.dialogueId === meterDialogueId && take.selected,
+  )
+  const meterData =
+    meterSnapshot && meterSnapshot.dialogueId === meterDialogueId
+      ? meterSnapshot.snapshot
+      : null
+  const meterPeaks =
+    meterMode === 'source'
+      ? meterData?.original
+      : meterMode === 'take'
+        ? meterData?.take
+        : null
+  const meterIndex =
+    meterData && selected
+      ? Math.floor(
+          ((playbackSeconds -
+            selected.timestampSeconds -
+            meterData.windowStartSeconds) /
+            meterData.windowSeconds) *
+            (meterPeaks?.length ?? 0),
+        )
+      : -1
+  const meterAmplitude =
+    meterMode === 'capture' ? liveLevel : (meterPeaks?.[meterIndex] ?? 0)
+  const meterGain =
+    meterMode === 'take' ? 10 ** ((selectedTakeForMeter?.gainDb ?? 0) / 20) : 1
+  const meterDb =
+    meterAmplitude > 0 ? 20 * Math.log10(meterAmplitude * meterGain) : -60
 
   useEffect(
     () => () => {
@@ -224,14 +282,14 @@ export function WorkspacePage({
       (url) => {
         if (active) setAudioAsset({ ref: selected.sourceRef, url })
       },
-      () => undefined,
+      (reason) => { if (active) reportError(reason, 'Original dialogue audio is unavailable.') },
     )
     if (selected.imageRef) {
       window.studio.getAssetUrl(pack.id, selected.imageRef).then(
         (url) => {
           if (active) setImageAsset({ ref: selected.imageRef!, url })
         },
-        () => undefined,
+        (reason) => { if (active) reportError(reason, 'The dialogue image is unavailable.') },
       )
     }
     return () => {
@@ -292,7 +350,7 @@ export function WorkspacePage({
   function stopClip() {
     videoRef.current?.pause()
     audioRef.current?.pause()
-    previewModeRef.current = null
+    setPreviewMode(null)
     previewRangeRef.current = previewRange
     if (playheadFrameRef.current !== null)
       cancelAnimationFrame(playheadFrameRef.current)
@@ -344,7 +402,7 @@ export function WorkspacePage({
   function startRecordingPreRoll() {
     const video = videoRef.current
     if (!video || !selected) return
-    previewModeRef.current = 'capture'
+    setPreviewMode('capture')
     setLiveTake(newLiveTakeWaveform(selected.id))
     audioRef.current?.pause()
     video.pause()
@@ -352,6 +410,8 @@ export function WorkspacePage({
     const cue = selected.timestampSeconds
     // The waveform pre-roll can start before video time zero.
     setPlaybackSeconds(cue - RECORDING_LEAD_IN_SECONDS)
+    // This timestamp is read when the recording callback runs.
+    // eslint-disable-next-line react-hooks/purity
     const startedAt = performance.now()
     const advance = () => {
       setPlaybackSeconds(
@@ -375,7 +435,7 @@ export function WorkspacePage({
     if (recordingFrameRef.current !== null)
       cancelAnimationFrame(recordingFrameRef.current)
     recordingFrameRef.current = null
-    previewModeRef.current = 'capture'
+    setPreviewMode('capture')
     const cue = selected.timestampSeconds
     const clipLength =
       sampleDuration?.ref === selected.sourceRef ? sampleDuration.seconds : 0
@@ -388,20 +448,14 @@ export function WorkspacePage({
       audioRef.current.currentTime = 0
       void audioRef.current
         .play()
-        .catch((reason) =>
-          setPreviewError(
-            reason instanceof Error ? reason.message : String(reason),
-          ),
-        )
+        .catch((reason) => reportError(reason, 'Original dialogue audio could not be played.'))
     }
     if (playClipVideo)
       void video
         .play()
-        .catch((reason) =>
-          setPreviewError(
-            reason instanceof Error ? reason.message : String(reason),
-          ),
-        )
+        .catch((reason) => reportError(reason, 'Video preview could not be played.'))
+    // This timestamp is read when the recording callback runs.
+    // eslint-disable-next-line react-hooks/purity
     const startedAt = performance.now()
     const advance = () => {
       setPlaybackSeconds(
@@ -454,14 +508,13 @@ export function WorkspacePage({
     )
     if (remainingSeconds <= 0 || startSeconds >= duration)
       return Promise.reject(new Error('This take falls outside the video.'))
-    previewModeRef.current = 'take'
+    setPreviewMode('take')
     previewRangeRef.current = {
       startSeconds,
       endSeconds: Math.min(duration, startSeconds + remainingSeconds),
     }
     video.currentTime = startSeconds
     setPlaybackSeconds(startSeconds)
-    setPreviewError(null)
     return video.play()
   }
 
@@ -486,8 +539,7 @@ export function WorkspacePage({
     video.currentTime = range.startSeconds
     audio.currentTime = 0
     previewRangeRef.current = { ...range, endSeconds: sourceEnd }
-    previewModeRef.current = 'source'
-    setPreviewError(null)
+    setPreviewMode('source')
     setPlaybackSeconds(range.startSeconds)
     setIsPlaying(true)
     // Start both media elements directly in the user gesture. Muting the video
@@ -501,11 +553,7 @@ export function WorkspacePage({
       },
       (reason) => {
         stopClip()
-        setPreviewError(
-          reason instanceof Error
-            ? reason.message
-            : 'Unable to play this clip.',
-        )
+        reportError(reason, 'Unable to play this clip.')
       },
     )
   }
@@ -545,9 +593,8 @@ export function WorkspacePage({
     try {
       setProject(await window.studio.updateProjectRoles(project.id, next))
       if (characterFilter === id && !next.includes(id)) setCharacterFilter('')
-      setError(null)
     } catch (reason) {
-      setError(String(reason))
+      reportError(reason)
     }
   }
 
@@ -574,7 +621,7 @@ export function WorkspacePage({
     try {
       await pending
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     }
   }
 
@@ -625,16 +672,10 @@ export function WorkspacePage({
             </div>
           </header>
         )}
-        {error && (
-          <p
-            role="alert"
-            className="mt-5 rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
-          >
-            {playerError(error)}
-          </p>
-        )}
         {!pack || !project ? (
-          <p className="mt-12 text-muted-foreground">Loading project…</p>
+          <p className="mt-12 text-muted-foreground">
+            {projectUnavailable ? 'Project unavailable' : 'Loading project…'}
+          </p>
         ) : (
           <MainElement className="workspace-main pt-8">
             <div className="mb-7">
@@ -659,167 +700,164 @@ export function WorkspacePage({
               <div className="workspace-primary space-y-6">
                 <section
                   aria-label="Video player"
-                  className="workspace-monitor overflow-hidden rounded-2xl border border-border bg-black"
+                  className="flex items-stretch gap-3"
                 >
-                  <div className="relative aspect-video w-full bg-black">
-                    {previewUrl ? (
-                      <video
-                        ref={videoRef}
-                        className="absolute inset-0 h-full w-full object-contain"
-                        src={previewUrl}
-                        muted
-                        playsInline
-                        preload="metadata"
+                  <AudioLevelMeter levelDb={meterDb} />
+                  <div className="workspace-monitor min-w-0 flex-1 overflow-hidden bg-black">
+                    <div className="relative aspect-video w-full bg-black">
+                      {previewUrl ? (
+                        <video
+                          ref={videoRef}
+                          className="absolute inset-0 h-full w-full object-contain"
+                          src={previewUrl}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          onLoadedMetadata={(event) => {
+                            const video = event.currentTarget
+                            setDuration(video.duration)
+                            setVideoReady(true)
+                            if (selected) {
+                              previewRangeRef.current = dialoguePreviewRange(
+                                selected,
+                                video.duration,
+                                sampleDuration?.ref === selected.sourceRef
+                                  ? sampleDuration.seconds
+                                  : undefined,
+                              )
+                              video.currentTime = selected.timestampSeconds
+                              setPlaybackSeconds(selected.timestampSeconds)
+                            }
+                          }}
+                          onTimeUpdate={(event) =>
+                            updatePlayback(event.currentTarget)
+                          }
+                          onPlaying={(event) => {
+                            const sourcePlaying =
+                              previewModeRef.current === 'source'
+                            setIsPlaying(sourcePlaying)
+                            if (sourcePlaying) startPlayheadLoop()
+                            const range = previewRangeRef.current
+                            const audio = audioRef.current
+                            if (sourcePlaying && range && audio) {
+                              const elapsed = Math.max(
+                                0,
+                                event.currentTarget.currentTime -
+                                  range.startSeconds,
+                              )
+                              if (Math.abs(audio.currentTime - elapsed) > 0.2)
+                                audio.currentTime = elapsed
+                            }
+                          }}
+                          onPause={() => {
+                            if (previewModeRef.current === 'source') return
+                            if (playheadFrameRef.current !== null)
+                              cancelAnimationFrame(playheadFrameRef.current)
+                            playheadFrameRef.current = null
+                            setIsPlaying(false)
+                          }}
+                          onEnded={() => {
+                            if (
+                              previewModeRef.current !== 'source' &&
+                              previewModeRef.current !== 'take'
+                            )
+                              stopClip()
+                          }}
+                          onError={() => {
+                            setVideoReady(false)
+                            reportError('Video preview could not be played.')
+                          }}
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                          {previewUnavailable
+                            ? 'Video preview unavailable'
+                            : 'Preparing an MP4 preview from the source OGV…'}
+                        </div>
+                      )}
+                      {selected && (
+                        <div className="pointer-events-none absolute left-4 top-4 z-10 rounded border border-white/25 bg-black/75 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-white">
+                          <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
+                          Cue{' '}
+                          <span className="ml-2 text-amber-300">
+                            {formatCueTime(playbackSeconds)}
+                          </span>
+                        </div>
+                      )}
+                      {selected && (
+                        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black via-black/75 to-transparent px-5 pb-6 pt-16 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            {selected.characterIds.map((id) => (
+                              <span
+                                key={id}
+                                className="bg-primary px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-primary-foreground"
+                              >
+                                {pack.characters.find(
+                                  (character) => character.id === id,
+                                )?.name ?? id}
+                              </span>
+                            ))}
+                          </div>
+                          <p className="mt-2 text-lg font-black text-white [text-shadow:0_2px_7px_#000,0_0_12px_#000] sm:text-2xl">
+                            {selected.caption || selected.sourceRef}
+                          </p>
+                          {imageUrl && (
+                            <img
+                              src={imageUrl}
+                              alt="Dialogue artwork"
+                              className="absolute bottom-4 right-4 max-h-12 max-w-12 rounded border border-white/20 object-contain"
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {audioUrl && (
+                      <audio
+                        ref={audioRef}
+                        key={audioUrl}
+                        src={audioUrl}
+                        preload="auto"
                         onLoadedMetadata={(event) => {
-                          const video = event.currentTarget
-                          setDuration(video.duration)
-                          setVideoReady(true)
-                          if (selected) {
-                            previewRangeRef.current = dialoguePreviewRange(
-                              selected,
-                              video.duration,
-                              sampleDuration?.ref === selected.sourceRef
-                                ? sampleDuration.seconds
-                                : undefined,
-                            )
-                            video.currentTime = selected.timestampSeconds
-                            setPlaybackSeconds(selected.timestampSeconds)
-                          }
-                        }}
-                        onTimeUpdate={(event) =>
-                          updatePlayback(event.currentTarget)
-                        }
-                        onPlaying={(event) => {
-                          const sourcePlaying =
-                            previewModeRef.current === 'source'
-                          setIsPlaying(sourcePlaying)
-                          if (sourcePlaying) startPlayheadLoop()
-                          const range = previewRangeRef.current
-                          const audio = audioRef.current
-                          if (sourcePlaying && range && audio) {
-                            const elapsed = Math.max(
-                              0,
-                              event.currentTarget.currentTime -
-                                range.startSeconds,
-                            )
-                            if (Math.abs(audio.currentTime - elapsed) > 0.2)
-                              audio.currentTime = elapsed
-                          }
-                        }}
-                        onPause={() => {
-                          if (previewModeRef.current === 'source') return
-                          if (playheadFrameRef.current !== null)
-                            cancelAnimationFrame(playheadFrameRef.current)
-                          playheadFrameRef.current = null
-                          setIsPlaying(false)
-                        }}
-                        onEnded={() => {
                           if (
-                            previewModeRef.current !== 'source' &&
-                            previewModeRef.current !== 'take'
+                            waveformDurationRef.current?.ref !==
+                            selected!.sourceRef
                           )
-                            stopClip()
+                            setSampleDuration({
+                              ref: selected!.sourceRef,
+                              seconds: event.currentTarget.duration,
+                            })
+                          setAudioReady(true)
                         }}
                         onError={() => {
-                          setVideoReady(false)
-                          setPreviewError('Video preview could not be played.')
+                          setAudioReady(false)
+                          reportError('Original dialogue audio could not be played.')
+                        }}
+                        onEnded={() => {
+                          finishSourceClip()
+                        }}
+                        onPlaying={() => {
+                          if (previewModeRef.current === 'source')
+                            startPlayheadLoop()
+                        }}
+                        onTimeUpdate={(event) => {
+                          if (previewModeRef.current !== 'source') return
+                          const range = previewRangeRef.current
+                          if (!range) return
+                          if (
+                            range.startSeconds +
+                              event.currentTarget.currentTime >=
+                            range.endSeconds
+                          )
+                            finishSourceClip()
+                          else
+                            setPlaybackSeconds(
+                              range.startSeconds +
+                                event.currentTarget.currentTime,
+                            )
                         }}
                       />
-                    ) : (
-                      <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                        {(previewError ? playerError(previewError) : null) ??
-                          'Preparing an MP4 preview from the source OGV…'}
-                      </div>
-                    )}
-                    {selected && (
-                      <div className="pointer-events-none absolute left-4 top-4 z-10 rounded border border-white/25 bg-black/75 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-white">
-                        <span className="mr-2 inline-block size-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]" />
-                        Cue{' '}
-                        <span className="ml-2 text-amber-300">
-                          {formatCueTime(playbackSeconds)}
-                        </span>
-                      </div>
-                    )}
-                    {selected && (
-                      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black via-black/75 to-transparent px-5 pb-6 pt-16 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          {selected.characterIds.map((id) => (
-                            <span
-                              key={id}
-                              className="bg-primary px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-primary-foreground"
-                            >
-                              {pack.characters.find(
-                                (character) => character.id === id,
-                              )?.name ?? id}
-                            </span>
-                          ))}
-                        </div>
-                        <p className="mt-2 text-lg font-black text-white [text-shadow:0_2px_7px_#000,0_0_12px_#000] sm:text-2xl">
-                          {selected.caption || selected.sourceRef}
-                        </p>
-                        {imageUrl && (
-                          <img
-                            src={imageUrl}
-                            alt="Dialogue artwork"
-                            className="absolute bottom-4 right-4 max-h-12 max-w-12 rounded border border-white/20 object-contain"
-                          />
-                        )}
-                      </div>
                     )}
                   </div>
-                  {audioUrl && (
-                    <audio
-                      ref={audioRef}
-                      key={audioUrl}
-                      src={audioUrl}
-                      preload="auto"
-                      onLoadedMetadata={(event) => {
-                        if (
-                          waveformDurationRef.current?.ref !==
-                          selected!.sourceRef
-                        )
-                          setSampleDuration({
-                            ref: selected!.sourceRef,
-                            seconds: event.currentTarget.duration,
-                          })
-                        setAudioReady(true)
-                      }}
-                      onError={() => {
-                        setAudioReady(false)
-                        setPreviewError(
-                          'Original dialogue audio could not be played.',
-                        )
-                      }}
-                      onEnded={() => {
-                        finishSourceClip()
-                      }}
-                      onPlaying={() => {
-                        if (previewModeRef.current === 'source')
-                          startPlayheadLoop()
-                      }}
-                      onTimeUpdate={(event) => {
-                        if (previewModeRef.current !== 'source') return
-                        const range = previewRangeRef.current
-                        if (!range) return
-                        if (
-                          range.startSeconds +
-                            event.currentTarget.currentTime >=
-                          range.endSeconds
-                        )
-                          finishSourceClip()
-                        else
-                          setPlaybackSeconds(
-                            range.startSeconds +
-                              event.currentTarget.currentTime,
-                          )
-                      }}
-                    />
-                  )}
-                  {previewError && previewUrl && (
-                    <p role="alert" className="px-5 pb-3 text-sm text-red-300">
-                      {playerError(previewError)}
-                    </p>
-                  )}
                 </section>
                 {selected && (
                   <OverlapWaveform
@@ -829,6 +867,7 @@ export function WorkspacePage({
                     cueSeconds={selected.timestampSeconds}
                     playbackSeconds={playbackSeconds}
                     onSourceDuration={handleSourceDuration}
+                    onSnapshot={handleMeterSnapshot}
                     liveTakePeaks={
                       liveTake?.dialogueId === selected.id
                         ? liveTake.peaks
@@ -1015,7 +1054,10 @@ export function WorkspacePage({
                     onRecordingStart={startRecordingPreview}
                     onPreRollStart={startRecordingPreRoll}
                     onRecordingStop={stopRecordingPreview}
-                    onRecordingSample={sampleRecording}
+                    onRecordingSample={(elapsedSeconds, amplitude) => {
+                      setLiveLevel(amplitude)
+                      sampleRecording(elapsedSeconds, amplitude)
+                    }}
                     onPlayRecording={playTakePreview}
                     voiceEffect={
                       project.voiceEffects?.[selected.id] ?? originalVoiceEffect

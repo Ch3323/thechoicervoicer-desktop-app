@@ -62,6 +62,86 @@ function inspect(path: string): Promise<string> {
 }
 
 describe('single-player persistence and export', () => {
+  it.skipIf(process.platform !== 'win32')(
+    'exports a project whose selected takes exceed the Windows command limit',
+    async () => {
+      const folder = join(root, 'Large Scene')
+      const userData = join(root, 'user-data')
+      const recordings = join(userData, 'recordings')
+      await mkdir(folder)
+      await ffmpeg([
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=blue:s=160x90:r=10:d=0.5',
+        '-c:v',
+        'libtheora',
+        '-an',
+        join(folder, 'dub_video.ogv'),
+      ])
+      await ffmpeg([
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=0.1',
+        '-c:a',
+        'pcm_s16le',
+        join(root, 'line.wav'),
+      ])
+      const bytes = new Uint8Array(await readFile(join(root, 'line.wav')))
+      for (let index = 0; index < 150; index++) {
+        const name = String(index + 1).padStart(3, '0')
+        await writeFile(join(folder, `${name}_Line.wav`), bytes)
+        await writeFile(
+          join(folder, `${name}_Line.ini`),
+          `[data]\ncaption="Line ${name}"\ndub_timestamps=[0.1]\ndub_characters=["Speaker"]`,
+        )
+      }
+      const pack = await importFolder(folder)
+      const store = new LibraryStore(userData)
+      await store.savePack(pack)
+      const project = await store.createProject(pack.id)
+      for (const dialogue of pack.dialogues) {
+        await saveRecording(recordings, store, {
+          projectId: project.id,
+          dialogueId: dialogue.id,
+          mimeType: 'audio/wav',
+          durationSeconds: 0.1,
+          bytes,
+        })
+      }
+      const output = join(root, 'large-export.mp4')
+      const progress: string[] = []
+      await exportProject(
+        store,
+        join(userData, 'packs'),
+        recordings,
+        project.id,
+        { useBackingTrack: false, requireComplete: true, fastMode: true },
+        output,
+        (update) => progress.push(update.message),
+      )
+      expect(
+        progress.some((message) => message.startsWith('Preparing audio 1 of ')),
+      ).toBe(true)
+      expect(await inspect(output)).toContain('Audio: aac')
+      expect(
+        (await readdir(root)).filter((name) =>
+          name.includes('large-export.mp4.'),
+        ),
+      ).toEqual([])
+    },
+    120_000,
+  )
+
   it('imports, saves and selects retakes, resumes, then renders full-duration H.264/AAC', async () => {
     const folder = join(root, 'Scene')
     const userData = join(root, 'user-data')
@@ -258,6 +338,47 @@ describe('single-player persistence and export', () => {
       effectUrl.split('/').at(-1)!,
     )
     expect(await inspect(auditionFile)).toContain('Audio: aac')
+    const boostedUrl = await effectTakeUrl(
+      reopened,
+      recordings,
+      join(userData, 'effect-previews'),
+      project.id,
+      pack.dialogues[0].id,
+      second.id,
+      {
+        preset: 'original',
+        pitch: 0,
+        tone: 0,
+        texture: 0,
+        space: 0,
+        echo: 0,
+        mod: 0,
+      },
+      24,
+    )
+    expect(boostedUrl).toContain('studio-media://effect/')
+    expect(
+      await inspect(
+        join(
+          userData,
+          'effect-previews',
+          project.id,
+          boostedUrl.split('/').at(-1)!,
+        ),
+      ),
+    ).toContain('Audio: aac')
+    const boostedPreview = await localPreviewTakeAudio(
+      reopened,
+      recordings,
+      join(userData, 'effect-previews'),
+      project.id,
+      pack.dialogues[0].id,
+      second.id,
+      undefined,
+      24,
+    )
+    expect(boostedPreview.mimeType).toBe('audio/mp4')
+    expect(boostedPreview.bytes.byteLength).toBeGreaterThan(0)
     const effectPreview = await localPreviewTakeAudio(
       reopened,
       recordings,

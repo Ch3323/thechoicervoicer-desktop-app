@@ -1,9 +1,7 @@
-import { useState } from 'react'
 import { Check, RefreshCcw } from 'lucide-react'
 import type { UpdateStatus } from '@studio/shared'
 import { Button } from '@/components/ui/button'
-import { useUpdateStatus } from '@/hooks/useUpdateStatus'
-import { playerError } from '@/lib/player-error'
+import { runUpdateAction, useUpdateStatus } from '@/hooks/useUpdateStatus'
 
 function lastCheckedText(checkedAt?: string): string {
   if (!checkedAt) return 'Last checked: Not yet'
@@ -24,7 +22,7 @@ function heading(status: UpdateStatus): string {
     case 'downloading': return 'Downloading update'
     case 'downloaded': return 'Update ready to install'
     case 'checking': return 'Checking for updates'
-    case 'error': return 'Could not check for updates'
+    case 'error': return 'Update failed'
     case 'disabled': return 'Update checks unavailable'
     case 'idle': return 'Check for updates'
   }
@@ -36,7 +34,6 @@ function detail(status: UpdateStatus, compact: boolean): string | null {
     case 'downloading': return `Downloading… ${status.percent ?? 0}%`
     case 'downloaded': return `Version ${status.version ?? 'new'} is ready. Install when you are ready.`
     case 'checking': return 'Looking for a newer version on GitHub…'
-    case 'error': return playerError(status.message, 'Could not check for updates. Check your connection, then try again.')
     case 'disabled': return compact
       ? 'Install a GitHub release to check.'
       : status.message?.includes('no update feed')
@@ -48,16 +45,7 @@ function detail(status: UpdateStatus, compact: boolean): string | null {
 
 export function UpdateControls({ compact = false }: { compact?: boolean }) {
   const status = useUpdateStatus()
-  const [actionError, setActionError] = useState<string | null>(null)
-  const run = async (action: () => Promise<void>) => {
-    setActionError(null)
-    try {
-      await action()
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error))
-    }
-  }
-  const description = actionError ? playerError(actionError, 'Could not complete the update. Please try again.') : detail(status, compact)
+  const description = detail(status, compact)
 
   return (
     <section aria-label="Updates" className={compact
@@ -80,14 +68,14 @@ export function UpdateControls({ compact = false }: { compact?: boolean }) {
         )}
       </div>
       <div className={`flex flex-wrap gap-2 ${compact ? 'col-start-2 justify-start' : 'shrink-0'}`}>
-        <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.checkForUpdates)}>
+        <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void runUpdateAction(window.studio.checkForUpdates)}>
           Check for updates
         </Button>
         {status.phase === 'available' && (
-          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.downloadUpdate)}>{compact ? 'Download' : 'Download update'}</Button>
+          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void runUpdateAction(window.studio.downloadUpdate)}>{compact ? 'Download' : 'Download update'}</Button>
         )}
         {status.phase === 'downloaded' && (
-          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void run(window.studio.installUpdate)}>{compact ? 'Install' : 'Install and restart'}</Button>
+          <Button className={compact ? 'h-8 px-2 text-xs' : undefined} size="sm" onClick={() => void runUpdateAction(window.studio.installUpdate)}>{compact ? 'Install' : 'Install and restart'}</Button>
         )}
       </div>
     </section>

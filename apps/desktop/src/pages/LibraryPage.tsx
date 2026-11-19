@@ -1,4 +1,4 @@
-import { playerError } from '@/lib/player-error'
+import { reportError } from '@/lib/error-toast'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Archive, Trash2, Users } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -13,7 +13,6 @@ export function LibraryPage() {
   const [packs, setPacks] = useState<DubPack[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [pendingRemoval, setPendingRemoval] = useState<{
     pack: DubPack
     projectCount: number
@@ -25,14 +24,13 @@ export function LibraryPage() {
   useEffect(() => {
     window.studio
       .listPacks()
-      .then(setPacks, (reason) => setError(String(reason)))
+      .then(setPacks, (reason) => reportError(reason))
   }, [])
 
   const selected = packs.find((pack) => pack.id === selectedId) ?? packs[0]
 
   async function importPack() {
     setBusy(true)
-    setError(null)
     const unsubscribe = window.studio.onImportProgress(setImportProgress)
     try {
       const pack = await window.studio.importPack()
@@ -41,7 +39,7 @@ export function LibraryPage() {
         setSelectedId(pack.id)
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       unsubscribe()
       setImportProgress(null)
@@ -51,13 +49,12 @@ export function LibraryPage() {
 
   async function removePack(pack: DubPack) {
     setBusy(true)
-    setError(null)
     try {
       await window.studio.removePack(pack.id)
       setPacks(await window.studio.listPacks())
       setSelectedId(null)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     } finally {
       setBusy(false)
     }
@@ -65,7 +62,6 @@ export function LibraryPage() {
 
   async function confirmRemovePack(pack: DubPack) {
     if (busy) return
-    setError(null)
     try {
       const projects = await window.studio.listProjects()
       setPendingRemoval({
@@ -74,19 +70,18 @@ export function LibraryPage() {
           .length,
       })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
     }
   }
 
   async function startProject() {
     if (!selected) return
     setBusy(true)
-    setError(null)
     try {
       const project = await window.studio.createProject(selected.id)
       navigate(`/workspace/${project.id}`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      reportError(reason)
       setBusy(false)
     }
   }
@@ -118,14 +113,6 @@ export function LibraryPage() {
               <Archive aria-hidden="true" /> Import ZIP
             </Button>
           </div>
-          {error && (
-            <p
-              role="alert"
-              className="mt-5 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
-            >
-              {playerError(error)}
-            </p>
-          )}
 
           <div className="mt-10 grid gap-6 lg:grid-cols-[minmax(240px,1fr)_minmax(0,2fr)]">
             <section aria-label="Imported packs" className="space-y-3">

@@ -14,6 +14,7 @@ export async function localPreviewTakeAudio(
   dialogueId: string,
   takeId: string,
   effect?: VoiceEffect,
+  gainDb = 0,
 ): Promise<PreviewTakeAudio> {
   const take = await store.getTake(takeId)
   if (
@@ -26,7 +27,7 @@ export async function localPreviewTakeAudio(
     throw new Error('Selected recording not found')
   let path = recordingPath(recordingRoot, take)
   let mimeType = take.mimeType.split(';')[0].trim()
-  if (effect) {
+  if (effect || gainDb !== 0) {
     const url = await effectTakeUrl(
       store,
       recordingRoot,
@@ -34,7 +35,16 @@ export async function localPreviewTakeAudio(
       projectId,
       dialogueId,
       takeId,
-      effect,
+      effect ?? {
+        preset: 'original',
+        pitch: 0,
+        tone: 0,
+        texture: 0,
+        space: 0,
+        echo: 0,
+        mod: 0,
+      },
+      gainDb,
     )
     if (url.startsWith('studio-media://effect/')) {
       const filename = url.split('/').at(-1)
@@ -53,6 +63,7 @@ export async function roomPreviewTakeAudio(
   dialogueId: string,
   takeId: string,
   effect?: VoiceEffect,
+  gainDb = 0,
 ): Promise<PreviewTakeAudio> {
   const state = client.getInfo()?.state
   const take = state?.takes.find(
@@ -64,11 +75,13 @@ export async function roomPreviewTakeAudio(
   )
   if (!take || state?.project?.id !== projectId)
     throw new Error('Selected room recording not found')
-  const path = effect
-    ? `/media/effect/${encodeURIComponent(dialogueId)}/${takeId}`
-    : `/media/take/${takeId}`
+  const path =
+    effect || gainDb !== 0
+      ? `/media/effect/${encodeURIComponent(dialogueId)}/${takeId}`
+      : `/media/take/${takeId}`
   const url = new URL(client.mediaUrl(path))
   if (effect) url.searchParams.set('revision', JSON.stringify(effect))
+  if (gainDb !== 0) url.searchParams.set('gainDb', String(gainDb))
   const response = await fetch(url, { redirect: 'error' })
   if (!response.ok) throw new Error('Room recording preview is unavailable')
   return {

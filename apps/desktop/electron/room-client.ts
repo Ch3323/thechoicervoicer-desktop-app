@@ -6,6 +6,7 @@ import {
   RoomCodeSchema,
   RecordingTakeSchema,
   type RecordingTake,
+  type RoomExitReason,
   type RoomState,
 } from '@studio/shared'
 
@@ -74,7 +75,10 @@ export class RoomClient {
   readonly address: string
   code: string
   readonly displayName: string
-  private readonly onState: (state: RoomState | null) => void
+  private readonly onState: (
+    state: RoomState | null,
+    reason?: RoomExitReason,
+  ) => void
   private readonly hostSecret?: string
   private readonly packFingerprint?: string
   private readonly roleIds?: string[]
@@ -88,8 +92,10 @@ export class RoomClient {
       packFingerprint?: string
       displayAddress?: string
       roleIds?: string[]
+      token?: string
     },
-    onState: (state: RoomState | null) => void,
+    onState: (state: RoomState | null, reason?: RoomExitReason) => void,
+    private readonly onClosing?: () => Promise<void>,
   ) {
     this.baseUrl = parseLanAddress(input.address)
     this.address = input.displayAddress ?? input.address
@@ -100,6 +106,7 @@ export class RoomClient {
     this.hostSecret = input.hostSecret
     this.packFingerprint = input.packFingerprint
     this.roleIds = input.roleIds
+    this.token = input.token ?? null
     this.onState = onState
   }
 
@@ -109,6 +116,7 @@ export class RoomClient {
     address: string
   }> {
     if (this.socket) throw new Error('Already connected')
+    if (this.closed) throw new Error('Room is closed')
     const socket = io(this.baseUrl, {
       autoConnect: false,
       transports: ['websocket'],
@@ -120,11 +128,34 @@ export class RoomClient {
       this.state = state
       this.onState(state)
     })
-    socket.on('room:closed', () => {
+    const end = (reason: RoomExitReason) => {
+      if (this.closed) return
       this.closed = true
+      this.token = null
       this.state = null
-      this.onState(null)
       socket.disconnect()
+      this.onState(null, reason)
+    }
+    socket.on('room:closed', () => end('closed'))
+    socket.on('room:kicked', () => end('kicked'))
+    socket.on('room:closing', (reply: () => void) => {
+      if (typeof reply !== 'function') return
+      void Promise.resolve().then(this.onClosing).then(reply, () => reply())
+    })
+    socket.on('disconnect', (reason) => {
+      if (reason === 'io server disconnect') {
+        end('expired')
+      } else if (socket.active && this.state) {
+        this.state = {
+          ...this.state,
+          players: this.state.players.map((player) =>
+            player.id === this.playerId
+              ? { ...player, connected: false }
+              : player,
+          ),
+        }
+        this.onState(this.state)
+      }
     })
     const join = async () => {
       const result = await this.request<{
@@ -140,6 +171,8 @@ export class RoomClient {
           ? { token: this.token }
           : { hostSecret: this.hostSecret }),
       })
+      if (!socket.connected || this.socket !== socket || this.closed)
+        throw new Error('Room connection ended')
       this.token = z.uuid().parse(result.token)
       this.code = RoomCodeSchema.parse(result.state.code)
       this.playerId = z.uuid().parse(result.playerId)
@@ -151,31 +184,36 @@ export class RoomClient {
         address: this.address,
       }
     }
-    socket.on('connect', () => {
-      if (this.token) void join().catch(() => undefined)
-    })
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.disconnect()
         reject(new Error('Could not connect to the Host'))
       }, 7000)
-      socket.once('connect', () => {
-        void join().then(
-          (value) => {
-            clearTimeout(timer)
-            resolve(value)
-          },
-          (error) => {
-            clearTimeout(timer)
-            socket.disconnect()
-            reject(error)
-          },
-        )
-      })
-      socket.once('connect_error', (error) => {
+      const firstConnectionError = (error: Error) => {
         clearTimeout(timer)
         socket.disconnect()
         reject(error)
+      }
+      socket.once('connect_error', firstConnectionError)
+      socket.once('connect', () => {
+        void join().then((value) => {
+          clearTimeout(timer)
+          socket.off('connect_error', firstConnectionError)
+          socket.on('connect', () => {
+            void join().catch((error: unknown) => {
+              if (
+                error instanceof Error &&
+                /Room session has expired|Room not found/.test(error.message)
+              )
+                end('expired')
+              else if (socket.connected) {
+                socket.disconnect()
+                socket.connect()
+              }
+            })
+          })
+          resolve(value)
+        }, firstConnectionError)
       })
       socket.connect()
     })
@@ -187,12 +225,18 @@ export class RoomClient {
       : null
   }
 
+  getResumeToken(): string | null {
+    return this.token
+  }
+
   async request<T = void>(
     event: string,
     value?: unknown,
     timeoutMs = 10_000,
   ): Promise<T> {
     if (!this.socket || this.closed) throw new Error('Room is closed')
+    if (!this.socket.connected)
+      throw new Error('Reconnecting to the room. Try again shortly.')
     return new Promise((resolve, reject) => {
       this.socket!.timeout(timeoutMs).emit(
         event,

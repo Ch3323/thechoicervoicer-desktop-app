@@ -3,6 +3,7 @@ import { ArrowLeft, Info, Moon, HardDrive } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { UpdateControls } from '@/components/UpdateControls'
+import { reportError } from '@/lib/error-toast'
 import { googleDriveExportsEnabled } from '@studio/shared'
 
 export function SettingsPage() {
@@ -15,7 +16,6 @@ export function SettingsPage() {
   const [clientId, setClientId] = useState('')
   const [folder, setFolder] = useState('')
   const [driveBusy, setDriveBusy] = useState(false)
-  const [driveError, setDriveError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -23,8 +23,10 @@ export function SettingsPage() {
       (value) => {
         if (active) setVersion(value)
       },
-      () => {
-        if (active) setVersion('Unavailable')
+      (reason) => {
+        if (!active) return
+        setVersion('Unavailable')
+        reportError(reason, 'Could not read the app version.')
       },
     )
     if (googleDriveExportsEnabled)
@@ -35,8 +37,8 @@ export function SettingsPage() {
             setClientId(value.clientId ?? '')
           }
         },
-        (error) => {
-          if (active) setDriveError(String(error))
+        (reason) => {
+          if (active) reportError(reason)
         },
       )
     return () => {
@@ -46,11 +48,10 @@ export function SettingsPage() {
 
   async function connectDrive() {
     setDriveBusy(true)
-    setDriveError('')
     try {
       setDrive(await window.studio.connectDrive(clientId, folder))
-    } catch (error) {
-      setDriveError(error instanceof Error ? error.message : String(error))
+    } catch (reason) {
+      reportError(reason)
     } finally {
       setDriveBusy(false)
     }
@@ -58,12 +59,11 @@ export function SettingsPage() {
 
   async function disconnectDrive() {
     setDriveBusy(true)
-    setDriveError('')
     try {
       await window.studio.disconnectDrive()
       setDrive({ connected: false })
-    } catch (error) {
-      setDriveError(error instanceof Error ? error.message : String(error))
+    } catch (reason) {
+      reportError(reason)
     } finally {
       setDriveBusy(false)
     }
@@ -150,11 +150,6 @@ export function SettingsPage() {
                         {driveBusy ? 'Connecting…' : 'Connect Google Drive'}
                       </Button>
                     </>
-                  )}
-                  {driveError && (
-                    <p role="alert" className="text-sm text-red-300">
-                      {driveError}
-                    </p>
                   )}
                 </div>
               </div>
