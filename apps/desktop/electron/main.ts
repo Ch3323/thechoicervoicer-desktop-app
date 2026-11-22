@@ -8,13 +8,22 @@ import {
   session,
   shell,
 } from 'electron'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { networkInterfaces, tmpdir } from 'node:os'
-import { mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rm, rename, writeFile } from 'node:fs/promises'
 import { mkdirSync } from 'node:fs'
 import { z } from 'zod'
-import { VoiceEffectSchema, googleDriveExportsEnabled } from '@studio/shared'
+import {
+  OnlinePackOrderSchema,
+  OnlinePackSearchSchema,
+  VoiceEffectSchema,
+  googleDriveExportsEnabled,
+  type OnlinePackDownloadEntry,
+  type OnlinePackDownloadProgress,
+  type OnlinePackDownloadResult,
+  type OnlinePackDownloadsSnapshot,
+} from '@studio/shared'
 import { LibraryStore } from './library-store'
 import {
   getAssetUrl,
@@ -37,6 +46,17 @@ import { downloadRoomPack } from './room-pack-download'
 import { downloadRoomTakes, saveRoomHistory } from './room-recordings'
 import { registerUpdates } from './updates'
 import { GoogleDrive } from './google-drive'
+import {
+  browseOnlinePacks,
+  getOnlinePack,
+  getOnlinePackActivity,
+  getOnlinePackArchiveContents,
+  getOnlinePackDownload,
+  importOnlinePackZip,
+  listOnlinePackCategories,
+  OnlinePackTransferQueue,
+  saveOnlinePackDownload,
+} from './gamebanana'
 import {
   RecordingTakeSchema,
   DisplayNameSchema,
@@ -996,6 +1016,271 @@ if (!gotSingleInstanceLock) {
       } finally {
         roomRenderControllers.delete(controller)
       }
+    })
+    const onlinePackId = z.int().positive()
+    ipcMain.handle(
+      'gamebanana:browse-packs',
+      (
+        event,
+        page: unknown,
+        category: unknown,
+        order: unknown,
+        searchTerm: unknown,
+      ) => {
+        fromMainWindow(event)
+        return browseOnlinePacks(
+          onlinePackId.parse(page),
+          onlinePackId.optional().parse(category),
+          OnlinePackOrderSchema.optional().parse(order),
+          OnlinePackSearchSchema.optional().parse(searchTerm),
+        )
+      },
+    )
+    ipcMain.handle('gamebanana:pack-categories', (event) => {
+      fromMainWindow(event)
+      return listOnlinePackCategories()
+    })
+    ipcMain.handle('gamebanana:get-pack', (event, packId: unknown) => {
+      fromMainWindow(event)
+      return getOnlinePack(onlinePackId.parse(packId))
+    })
+    ipcMain.handle(
+      'gamebanana:archive-contents',
+      (event, packId: unknown, fileId: unknown) => {
+        fromMainWindow(event)
+        return getOnlinePackArchiveContents(
+          onlinePackId.parse(packId),
+          onlinePackId.parse(fileId),
+        )
+      },
+    )
+    ipcMain.handle(
+      'gamebanana:pack-activity',
+      (
+        event,
+        packId: unknown,
+        kind: unknown,
+        page: unknown,
+        parentPostId: unknown,
+      ) => {
+        fromMainWindow(event)
+        const section = z
+          .enum(['updates', 'comments', 'issues', 'todos'])
+          .parse(kind)
+        const parent = onlinePackId.optional().parse(parentPostId)
+        if (parent && section !== 'comments') throw new Error('Invalid comment thread.')
+        return getOnlinePackActivity(
+          onlinePackId.parse(packId),
+          section,
+          onlinePackId.parse(page),
+          parent,
+        )
+      },
+    )
+    const onlineDownloads = new Map<number, {
+      packId: number
+      sender: Electron.WebContents
+      controller: AbortController
+    }>()
+    const onlineDownloadSenders = new WeakSet<Electron.WebContents>()
+    const onlineDownloadEntries = new Map<number, OnlinePackDownloadEntry>()
+    const onlineSavePaths = new Set<string>()
+    const onlineTransfers = new OnlinePackTransferQueue(8)
+    let onlineSaveDialog = Promise.resolve()
+    let onlineDownloadRevision = 0
+    let completedOnlineBytes = 0
+
+    function onlineDownloadSnapshot(): OnlinePackDownloadsSnapshot {
+      return {
+        revision: onlineDownloadRevision,
+        downloads: [...onlineDownloadEntries.values()].reverse(),
+        completedBytes: completedOnlineBytes,
+      }
+    }
+
+    function announceOnlineDownloads(sender: Electron.WebContents) {
+      onlineDownloadRevision++
+      if (!sender.isDestroyed())
+        sender.send('gamebanana:downloads-changed', onlineDownloadSnapshot())
+    }
+
+    ipcMain.handle('gamebanana:get-downloads', (event) => {
+      fromMainWindow(event)
+      return onlineDownloadSnapshot()
+    })
+    ipcMain.handle('gamebanana:clear-finished-downloads', (event) => {
+      fromMainWindow(event)
+      for (const [fileId, entry] of onlineDownloadEntries) {
+        if (entry.status !== 'working') onlineDownloadEntries.delete(fileId)
+      }
+      if (!onlineDownloads.size) completedOnlineBytes = 0
+      announceOnlineDownloads(event.sender)
+    })
+
+    function runOnlineTransfer<T>(
+      signal: AbortSignal,
+      report: (progress: Pick<OnlinePackDownloadProgress, 'phase' | 'percent'>) => void,
+      transfer: () => Promise<T>,
+    ) {
+      return onlineTransfers.run(
+        signal,
+        () => report({ phase: 'queued' }),
+        () => {
+          report({ phase: 'downloading' })
+          return duringWrite(transfer)
+        },
+      )
+    }
+    ipcMain.handle(
+      'gamebanana:cancel-download',
+      (event, packId: unknown, fileId: unknown) => {
+        fromMainWindow(event)
+        const id = onlinePackId.parse(packId)
+        const downloadId = onlinePackId.parse(fileId)
+        const onlineDownload = onlineDownloads.get(downloadId)
+        if (
+          onlineDownload?.sender === event.sender &&
+          onlineDownload.packId === id
+        ) {
+          onlineDownload.controller.abort()
+          const entry = onlineDownloadEntries.get(downloadId)
+          if (entry?.status === 'working') {
+            onlineDownloadEntries.set(downloadId, { ...entry, cancelling: true })
+            announceOnlineDownloads(event.sender)
+          }
+        }
+      },
+    )
+    ipcMain.handle(
+      'gamebanana:download-pack',
+      async (
+        event,
+        packId: unknown,
+        fileId: unknown,
+        destination: unknown,
+      ): Promise<OnlinePackDownloadResult | null> => {
+        fromMainWindow(event)
+        const id = onlinePackId.parse(packId)
+        const downloadId = onlinePackId.parse(fileId)
+        const target = z.enum(['app', 'device']).parse(destination)
+        if (onlineDownloads.has(downloadId))
+          throw new Error('This GameBanana file is already downloading.')
+
+        const sender = event.sender
+        const controller = new AbortController()
+        const { signal } = controller
+        if (!onlineDownloads.size) completedOnlineBytes = 0
+        onlineDownloads.set(downloadId, { packId: id, sender, controller })
+        if (!onlineDownloadSenders.has(sender)) {
+          onlineDownloadSenders.add(sender)
+          sender.once('destroyed', () => {
+            for (const download of onlineDownloads.values()) {
+              if (download.sender === sender) download.controller.abort()
+            }
+          })
+        }
+        let entry: OnlinePackDownloadEntry = {
+          packId: id,
+          fileId: downloadId,
+          name: 'Preparing archive',
+          size: 0,
+          phase: 'preparing',
+          status: 'working',
+        }
+        const update = (next: OnlinePackDownloadEntry) => {
+          entry = next
+          onlineDownloadEntries.set(downloadId, next)
+          announceOnlineDownloads(sender)
+        }
+        try {
+          onlineDownloadEntries.delete(downloadId)
+          update(entry)
+          const file = await getOnlinePackDownload(id, downloadId, signal)
+          signal.throwIfAborted()
+          update({ ...entry, name: file.name, size: file.size })
+          const report = (
+            progress: Pick<OnlinePackDownloadProgress, 'phase' | 'percent'>,
+          ) => {
+            if (!signal.aborted)
+              update({ ...entry, phase: progress.phase, percent: progress.percent })
+          }
+          const onDownloadProgress = (percent: number) =>
+            report({ phase: 'downloading', percent })
+          if (target === 'app') {
+            if (!/\.zip$/i.test(file.name))
+              throw new Error('Only ZIP archives can be imported into the app.')
+            const pack = await runOnlineTransfer(signal, report, () =>
+              importOnlinePackZip(
+                file,
+                temporaryRoot,
+                packStorage,
+                store,
+                onDownloadProgress,
+                (percent) => report({ phase: 'importing', percent }),
+                signal,
+              ),
+            )
+            completedOnlineBytes += file.size
+            update({ ...entry, status: 'imported', title: pack.metadata.title })
+            if (!sender.isDestroyed()) sender.send('gamebanana:pack-imported', pack)
+            return { kind: 'imported', pack }
+          }
+
+          const saveDialog = onlineSaveDialog.then(() => {
+            signal.throwIfAborted()
+            if (!mainWindow || mainWindow.webContents !== sender) return
+            return dialog.showSaveDialog(mainWindow, {
+              title: 'Save Dub Pack archive',
+              defaultPath: join(app.getPath('downloads'), file.name),
+            })
+          })
+          onlineSaveDialog = saveDialog.then(() => undefined, () => undefined)
+          const selection = await saveDialog
+          signal.throwIfAborted()
+          if (!selection || selection.canceled || !selection.filePath) {
+            update({ ...entry, status: 'cancelled' })
+            return null
+          }
+          const path = selection.filePath
+          const resolvedPath = join(await realpath(dirname(path)), basename(path))
+          const pathKey = process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath
+          if (onlineSavePaths.has(pathKey))
+            throw new Error('Another download is already saving to this location.')
+          onlineSavePaths.add(pathKey)
+          try {
+            await runOnlineTransfer(signal, report, () =>
+              saveOnlinePackDownload(file, resolvedPath, onDownloadProgress, signal),
+            )
+          } finally {
+            onlineSavePaths.delete(pathKey)
+          }
+          const name = basename(path)
+          completedOnlineBytes += file.size
+          update({ ...entry, status: 'saved', name })
+          return { kind: 'saved', name }
+        } catch (error) {
+          if (signal.aborted) {
+            update({ ...entry, status: 'cancelled' })
+            return { kind: 'cancelled' }
+          }
+          update({ ...entry, status: 'error' })
+          throw error
+        } finally {
+          onlineDownloads.delete(downloadId)
+        }
+      },
+    )
+    ipcMain.handle('gamebanana:open-link', (event, href: unknown) => {
+      fromMainWindow(event)
+      const url = URL.parse(z.string().max(2048).parse(href))
+      if (
+        !url ||
+        !['https:', 'http:'].includes(url.protocol) ||
+        url.username ||
+        url.password
+      )
+        throw new Error('Invalid listing link.')
+      return shell.openExternal(url.href)
     })
     ipcMain.handle('library:list-packs', (event) => {
       fromMainWindow(event)

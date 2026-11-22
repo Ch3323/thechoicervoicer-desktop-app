@@ -49,6 +49,7 @@ export async function readPackFolder(
   sourceKind: 'folder' | 'zip',
   sourceLocation: string,
   id: string,
+  fallbackTitle = basename(folder),
 ): Promise<DubPack> {
   const entries = await readdir(folder, { withFileTypes: true })
   const selected = entries.filter(
@@ -71,7 +72,7 @@ export async function readPackFolder(
   return parseDubPack({
     id,
     source: { kind: sourceKind, location: sourceLocation },
-    folderName: basename(folder),
+    folderName: fallbackTitle,
     files,
   })
 }
@@ -80,7 +81,7 @@ function openZip(path: string): Promise<ZipFile> {
   return new Promise((resolveZip, reject) => {
     yauzl.open(
       path,
-      { lazyEntries: true, autoClose: true, validateEntrySizes: true },
+      { lazyEntries: true, autoClose: false, validateEntrySizes: true },
       (error, zip) => {
         if (error || !zip)
           reject(error ?? new Error('Unable to open ZIP archive'))
@@ -90,11 +91,15 @@ function openZip(path: string): Promise<ZipFile> {
   })
 }
 
-function entriesOf(zip: ZipFile): Promise<Entry[]> {
+function entriesOf(zip: ZipFile, signal?: AbortSignal): Promise<Entry[]> {
   return new Promise((resolveEntries, reject) => {
     const entries: Entry[] = []
     let totalBytes = 0
     zip.on('entry', (entry) => {
+      if (signal?.aborted) {
+        reject(signal.reason)
+        return
+      }
       const path = entry.fileName
       const mode = (entry.externalFileAttributes >>> 16) & 0o170000
       if (
@@ -104,7 +109,6 @@ function entriesOf(zip: ZipFile): Promise<Entry[]> {
         mode === 0o120000 ||
         entry.isEncrypted()
       ) {
-        zip.close()
         reject(
           new PackValidationError('ZIP contains an unsafe or encrypted entry.'),
         )
@@ -113,7 +117,6 @@ function entriesOf(zip: ZipFile): Promise<Entry[]> {
       entries.push(entry)
       totalBytes += entry.uncompressedSize
       if (entries.length > MAX_ZIP_ENTRIES || totalBytes > MAX_ZIP_BYTES) {
-        zip.close()
         reject(
           new PackValidationError(
             'ZIP archive exceeds the import safety limit.',
@@ -156,12 +159,15 @@ export async function importZip(
   archive: string,
   storageRoot: string,
   onProgress?: (progress: ImportProgress) => void,
+  source?: { id: string; location: string; fallbackTitle: string },
+  signal?: AbortSignal,
 ): Promise<DubPack> {
+  signal?.throwIfAborted()
   const archivePath = resolve(archive)
   const archiveStat = await stat(archivePath)
-  const id = packId(
-    `zip:${archivePath}:${archiveStat.size}:${archiveStat.mtimeMs}`,
-  )
+  const id =
+    source?.id ??
+    packId(`zip:${archivePath}:${archiveStat.size}:${archiveStat.mtimeMs}`)
   const finalFolder = join(storageRoot, id)
   const staging = join(storageRoot, `${id}.importing`)
   await mkdir(storageRoot, { recursive: true })
@@ -169,81 +175,81 @@ export async function importZip(
   await mkdir(staging)
 
   try {
-    const discoveryZip = await openZip(archivePath)
-    const allEntries = await entriesOf(discoveryZip)
-    const videoEntries = allEntries.filter(
-      (entry) => isPackVideoFileName(basename(entry.fileName)),
-    )
-    if (videoEntries.length !== 1)
-      throw new PackValidationError(
-        'ZIP must contain exactly one Dub Pack video named dub_video.<extension>.',
+    signal?.throwIfAborted()
+    const zip = await openZip(archivePath)
+    try {
+      const allEntries = await entriesOf(zip, signal)
+      const videoEntries = allEntries.filter((entry) =>
+        isPackVideoFileName(basename(entry.fileName)),
       )
-    const prefix = dirname(videoEntries[0].fileName).replace(/\\/g, '/')
-    const rootPrefix = prefix === '.' ? '' : `${prefix}/`
-    const selected = allEntries.filter(
-      (entry) =>
-        entry.fileName.startsWith(rootPrefix) &&
-        !entry.fileName.slice(rootPrefix.length).includes('/') &&
-        isPackFileName(basename(entry.fileName)),
-    )
-    const expected = new Set(
-      selected.map((entry) => entry.fileName.toLowerCase()),
-    )
-    if (expected.size !== selected.length)
-      throw new PackValidationError('ZIP has duplicate pack filenames.')
+      if (videoEntries.length !== 1)
+        throw new PackValidationError(
+          'ZIP must contain exactly one Dub Pack video named dub_video.<extension>.',
+        )
+      const prefix = dirname(videoEntries[0].fileName).replace(/\\/g, '/')
+      const rootPrefix = prefix === '.' ? '' : `${prefix}/`
+      const selected = allEntries.filter(
+        (entry) =>
+          entry.fileName.startsWith(rootPrefix) &&
+          !entry.fileName.slice(rootPrefix.length).includes('/') &&
+          isPackFileName(basename(entry.fileName)),
+      )
+      const uniqueNames = new Set(
+        selected.map((entry) => entry.fileName.toLowerCase()),
+      )
+      if (uniqueNames.size !== selected.length)
+        throw new PackValidationError('ZIP has duplicate pack filenames.')
 
-    const totalBytes = selected.reduce(
-      (sum, entry) => sum + entry.uncompressedSize,
-      0,
-    )
-    let completedBytes = 0
-    let lastReport = 0
-    const report = (force = false) => {
-      const now = Date.now()
-      if (!force && now - lastReport < 100) return
-      lastReport = now
-      onProgress?.({ phase: 'extracting', completedBytes, totalBytes })
-    }
-    report(true)
+      const totalBytes = selected.reduce(
+        (sum, entry) => sum + entry.uncompressedSize,
+        0,
+      )
+      let completedBytes = 0
+      let lastReport = 0
+      const report = (force = false) => {
+        const now = Date.now()
+        if (!force && now - lastReport < 100) return
+        lastReport = now
+        onProgress?.({ phase: 'extracting', completedBytes, totalBytes })
+      }
+      report(true)
 
-    const extractionZip = await openZip(archivePath)
-    await new Promise<void>((resolveExtraction, reject) => {
-      extractionZip.on('entry', (entry) => {
-        if (!expected.has(entry.fileName.toLowerCase())) {
-          extractionZip.readEntry()
-          return
-        }
+      for (const entry of selected) {
+        signal?.throwIfAborted()
         const name = basename(entry.fileName)
-        void streamEntry(extractionZip, entry)
-          .then((stream) =>
-            pipeline(
-              stream,
-              new Transform({
-                transform(chunk: Buffer, _encoding, callback) {
-                  completedBytes += chunk.length
-                  report()
-                  callback(null, chunk)
-                },
-              }),
-              createWriteStream(join(staging, name)),
-            ),
-          )
-          .then(() => {
-            report(true)
-            extractionZip.readEntry()
-          }, reject)
-      })
-      extractionZip.once('end', resolveExtraction)
-      extractionZip.once('error', reject)
-      extractionZip.readEntry()
-    })
+        await pipeline(
+          await streamEntry(zip, entry),
+          new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              completedBytes += chunk.length
+              report()
+              callback(null, chunk)
+            },
+          }),
+          createWriteStream(join(staging, name), {
+            highWaterMark: 1024 * 1024,
+          }),
+          { signal },
+        )
+        report(true)
+      }
+    } finally {
+      zip.close()
+    }
 
-    const pack = await readPackFolder(staging, 'zip', archivePath, id)
+    const pack = await readPackFolder(
+      staging,
+      'zip',
+      source?.location ?? archivePath,
+      id,
+      source?.fallbackTitle,
+    )
+    signal?.throwIfAborted()
     await rm(finalFolder, { recursive: true, force: true })
     await rename(staging, finalFolder)
     return pack
   } catch (error) {
-    await rm(staging, { recursive: true, force: true })
+    await rm(staging, { recursive: true, force: true, maxRetries: 3 })
     throw error
   }
 }

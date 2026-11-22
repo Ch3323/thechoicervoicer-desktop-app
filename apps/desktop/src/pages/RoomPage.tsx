@@ -996,9 +996,11 @@ export function RoomPage({
               )}
               {busy && downloadProgress && (
                 <p className="multiplayer-hint" role="status">
-                  {downloadProgress.totalBytes > 0
-                    ? `${Math.round((downloadProgress.completedBytes / downloadProgress.totalBytes) * 100)}% downloaded`
-                    : 'Preparing pack download…'}
+                  {downloadProgress.phase === 'saving'
+                    ? 'Verifying and saving pack…'
+                    : downloadProgress.totalBytes > 0
+                      ? `${Math.round((downloadProgress.completedBytes / downloadProgress.totalBytes) * 100)}% downloaded`
+                      : 'Preparing pack download…'}
                 </p>
               )}
               {selectedJoinPackId && !joinTarget.details.rejoining && (
@@ -2139,7 +2141,7 @@ export function RoomPage({
               </>
             )}
             {!state?.pack && (
-              <p className="rounded border border-border p-5">
+              <p className="p-5 text-center">
                 Waiting for the Host to share a Dub Pack project.
               </p>
             )}

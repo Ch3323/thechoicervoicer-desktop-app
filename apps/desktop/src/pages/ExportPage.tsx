@@ -123,8 +123,8 @@ export function ExportPage() {
       <div className="mx-auto max-w-5xl px-6 py-7 sm:px-10">
         <header className="border-b border-border pb-7">
           <Button asChild variant="ghost" size="sm">
-            <Link to={projectId ? `/workspace/${projectId}` : '/projects'}>
-              <ArrowLeft aria-hidden="true" /> Workspace
+            <Link to={projectId ? `/workspace/${projectId}` : '/'}>
+              <ArrowLeft aria-hidden="true" /> {projectId ? 'Workspace' : 'Home'}
             </Link>
           </Button>
         </header>
@@ -134,7 +134,7 @@ export function ExportPage() {
           </p>
           <h1 className="text-4xl font-semibold">Export video</h1>
           {!project || !pack || !timeline ? (
-            <p className="mt-8 text-muted-foreground">
+            <p className="mt-8 text-center text-muted-foreground">
               {projectUnavailable ? 'Project unavailable' : 'Loading project…'}
             </p>
           ) : (
@@ -321,7 +321,9 @@ export function ExportPage() {
                   </Button>
                 )}
               </div>
-              <section className="rounded-2xl border border-border bg-card p-6">
+              <section
+                className={`p-6${timeline.missingDialogueIds.length > 0 ? ' rounded-2xl border border-border bg-card' : ''}`}
+              >
                 <h2 className="font-semibold">Missing recordings</h2>
                 <p className="mt-2 text-sm text-muted-foreground">
                   {timeline.missingDialogueIds.length} assigned lines need a
@@ -348,7 +350,7 @@ export function ExportPage() {
                     )
                   })}
                   {timeline.missingDialogueIds.length === 0 && (
-                    <p className="text-sm text-primary">
+                    <p className="text-center text-sm text-primary">
                       All assigned lines are complete.
                     </p>
                   )}

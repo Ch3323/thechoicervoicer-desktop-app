@@ -47,13 +47,17 @@ export class LibraryStore {
   }
 
   private async read(): Promise<Library> {
-    if (this.cache) return structuredClone(this.cache)
-    if (this.loading) return structuredClone(await this.loading)
+    return structuredClone(await this.readSnapshot())
+  }
+
+  private async readSnapshot(): Promise<Library> {
+    if (this.cache) return this.cache
+    if (this.loading) return this.loading
     this.loading = this.readFromDisk()
     try {
       const data = await this.loading
       this.cache = data
-      return structuredClone(data)
+      return data
     } finally {
       this.loading = null
     }
@@ -101,7 +105,8 @@ export class LibraryStore {
   }
 
   async getPack(id: string): Promise<DubPack | null> {
-    return (await this.read()).packs.find((pack) => pack.id === id) ?? null
+    const pack = (await this.readSnapshot()).packs.find((item) => item.id === id)
+    return pack ? structuredClone(pack) : null
   }
 
   async savePack(pack: DubPack): Promise<void> {

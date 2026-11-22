@@ -18,7 +18,8 @@ import { parseLanAddress } from './room-client'
 
 const MAX_PACK_BYTES = 8 * 1024 * 1024 * 1024
 const TRANSFER_CONCURRENCY = 4
-const RANGE_BYTES = 16 * 1024 * 1024
+const MIN_RANGE_BYTES = 16 * 1024 * 1024
+const MAX_RANGE_BYTES = 64 * 1024 * 1024
 const PackFile = z.object({
   name: z
     .string()
@@ -99,11 +100,15 @@ export async function downloadRoomPack(
       } finally {
         await handle.close()
       }
-      for (let start = 0; start < file.size; start += RANGE_BYTES)
+      const rangeBytes = Math.min(
+        MAX_RANGE_BYTES,
+        Math.max(MIN_RANGE_BYTES, Math.ceil(file.size / TRANSFER_CONCURRENCY)),
+      )
+      for (let start = 0; start < file.size; start += rangeBytes)
         transfers.push({
           name: file.name,
           start,
-          end: Math.min(start + RANGE_BYTES, file.size) - 1,
+          end: Math.min(start + rangeBytes, file.size) - 1,
           size: file.size,
         })
     }
@@ -133,6 +138,7 @@ export async function downloadRoomPack(
             download.body as import('node:stream/web').ReadableStream,
           ),
           new Transform({
+            highWaterMark: 512 * 1024,
             transform(chunk: Buffer, _encoding, callback) {
               partBytes += chunk.length
               if (partBytes > part.end - part.start + 1)
@@ -157,6 +163,7 @@ export async function downloadRoomPack(
           createWriteStream(join(staging, part.name), {
             flags: 'r+',
             start: part.start,
+            highWaterMark: 512 * 1024,
           }),
           { signal: controller.signal },
         )
@@ -175,6 +182,7 @@ export async function downloadRoomPack(
     const results = await Promise.allSettled(workers)
     const failure = results.find((result) => result.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
+    onProgress?.({ phase: 'saving', completedBytes, totalBytes })
     const parsedPack = await readPackFolder(
       staging,
       'zip',
@@ -186,13 +194,9 @@ export async function downloadRoomPack(
       metadata: { ...parsedPack.metadata, title: manifest.title },
     }
     if (
-      (await packFingerprint(
-        { ...pack, source: { kind: 'folder', location: staging } },
-        storageRoot,
-      )) !== manifest.fingerprint
+      (await packFingerprint(pack, storageRoot, staging)) !== manifest.fingerprint
     )
       throw new Error('Downloaded Dub Pack does not match the Host pack')
-    onProgress?.({ phase: 'saving', completedBytes, totalBytes })
     await rm(destination, { recursive: true, force: true })
     await rename(staging, destination)
     await store.savePack(pack)

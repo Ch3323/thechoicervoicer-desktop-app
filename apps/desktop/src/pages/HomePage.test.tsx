@@ -7,7 +7,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   parseDubPack,
@@ -71,6 +71,60 @@ function showHome() {
 }
 
 describe('HomePage', () => {
+  it('opens the Browse Packs page from the bottom of navigation', async () => {
+    window.studio = {
+      listPacks: async () => [pack],
+      listProjects: async () => [project],
+      getRoom: async () => null,
+      onRoomState: () => () => undefined,
+      getAssetUrl: async () => 'studio-media://pack/cover.png',
+    } as unknown as DesktopApi
+    render(
+      <MemoryRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/browse" element={<h1>Browse Dub Packs</h1>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('studio')
+
+    const navigation = within(
+      screen.getByRole('navigation', { name: 'Studio navigation' }),
+    )
+    const browse = navigation.getByRole('link', { name: 'Browse packs' })
+    expect(browse).toBe(
+      navigation.getByRole('button', { name: 'Settings menu' })
+        .nextElementSibling,
+    )
+    fireEvent.click(browse)
+    expect(
+      await screen.findByRole('heading', { name: 'Browse Dub Packs' }),
+    ).toBeVisible()
+  })
+
+  it('opens Browse Dub Packs from the welcome screen', async () => {
+    window.studio = {
+      listPacks: async () => [],
+      listProjects: async () => [],
+    } as unknown as DesktopApi
+    render(
+      <MemoryRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/browse" element={<h1>Browse Dub Packs</h1>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(
+      await screen.findByRole('link', { name: 'BROWSE DUB PACKS' }),
+    )
+    expect(
+      screen.getByRole('heading', { name: 'Browse Dub Packs' }),
+    ).toBeVisible()
+  })
+
   it('opens multiplayer setup over the current page without changing the route', async () => {
     window.studio = {
       listPacks: async () => [pack],

@@ -391,6 +391,29 @@ it('synchronizes roles and uploads, recovers a session, and exports takes from d
   expect(await packFingerprint(downloaded, join(downloadedRoot, 'packs'))).toBe(
     fingerprint,
   )
+  const downloadedVideo = join(
+    downloadedRoot,
+    'packs',
+    downloaded.id,
+    downloaded.videoRef,
+  )
+  const modifiedVideo = await readFile(downloadedVideo)
+  modifiedVideo[0] ^= 0xff
+  await writeFile(downloadedVideo, modifiedVideo)
+  expect(
+    await packFingerprint(downloaded, join(downloadedRoot, 'packs')),
+  ).not.toBe(fingerprint)
+  await expect(
+    downloadRoomPack(
+      `127.0.0.1:${port}`,
+      server.code,
+      join(downloadedRoot, 'packs'),
+      downloadedStore,
+    ),
+  ).resolves.toEqual(downloaded)
+  expect(await packFingerprint(downloaded, join(downloadedRoot, 'packs'))).toBe(
+    fingerprint,
+  )
   await guestWithoutPack.request('room:pack-ready', fingerprint)
   expect(
     guestWithoutPack

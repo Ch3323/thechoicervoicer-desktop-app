@@ -1,7 +1,7 @@
 import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ListFilter, X } from 'lucide-react'
-import { Link, useParams } from 'react-router-dom'
+import { useOutletContext, useParams } from 'react-router-dom'
 import {
   buildAudioTimeline,
   dialoguePreviewRange,
@@ -17,6 +17,7 @@ import {
 } from '@studio/shared'
 import { Button } from '@/components/ui/button'
 import { BrandLockup } from '@/components/BrandLockup'
+import type { StudioSidebarContext } from '@/components/StudioSidebar'
 import { Switch } from '@/components/ui/switch'
 import { RecordingStudio } from '@/components/RecordingStudio'
 import { AudioLevelMeter } from '@/components/AudioLevelMeter'
@@ -49,6 +50,7 @@ export function WorkspacePage({
   activeProjectId?: string
 } = {}) {
   const { projectId: routeProjectId } = useParams()
+  const sidebar = useOutletContext<StudioSidebarContext | null>()
   const projectId = activeProjectId ?? routeProjectId
   const MainElement = embedded ? 'div' : 'main'
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -171,15 +173,15 @@ export function WorkspacePage({
   const previousAssigned =
     selectedPackIndex > 0
       ? pack?.dialogues
-          .slice(0, selectedPackIndex)
-          .reverse()
-          .find(
-            (dialogue) =>
-              project &&
-              dialogueMatchesRoles(dialogue, project.enabledCharacterIds) &&
-              (!characterFilter ||
-                dialogue.characterIds.includes(characterFilter)),
-          )
+        .slice(0, selectedPackIndex)
+        .reverse()
+        .find(
+          (dialogue) =>
+            project &&
+            dialogueMatchesRoles(dialogue, project.enabledCharacterIds) &&
+            (!characterFilter ||
+              dialogue.characterIds.includes(characterFilter)),
+        )
       : undefined
   const nextAssigned = pack?.dialogues
     .slice(selectedPackIndex + 1)
@@ -193,12 +195,12 @@ export function WorkspacePage({
     () =>
       selected
         ? dialoguePreviewRange(
-            selected,
-            duration,
-            sampleDuration?.ref === selected.sourceRef
-              ? sampleDuration.seconds
-              : undefined,
-          )
+          selected,
+          duration,
+          sampleDuration?.ref === selected.sourceRef
+            ? sampleDuration.seconds
+            : undefined,
+        )
         : null,
     [selected, duration, sampleDuration],
   )
@@ -236,12 +238,12 @@ export function WorkspacePage({
   const meterIndex =
     meterData && selected
       ? Math.floor(
-          ((playbackSeconds -
-            selected.timestampSeconds -
-            meterData.windowStartSeconds) /
-            meterData.windowSeconds) *
-            (meterPeaks?.length ?? 0),
-        )
+        ((playbackSeconds -
+          selected.timestampSeconds -
+          meterData.windowStartSeconds) /
+          meterData.windowSeconds) *
+        (meterPeaks?.length ?? 0),
+      )
       : -1
   const meterAmplitude =
     meterMode === 'capture' ? liveLevel : (meterPeaks?.[meterIndex] ?? 0)
@@ -308,7 +310,7 @@ export function WorkspacePage({
       characterFilter
         ? dialogue.characterIds.includes(characterFilter)
         : !onlyMyRoles ||
-          dialogueMatchesRoles(dialogue, project.enabledCharacterIds),
+        dialogueMatchesRoles(dialogue, project.enabledCharacterIds),
     )
   }, [pack, project, onlyMyRoles, characterFilter])
 
@@ -416,11 +418,11 @@ export function WorkspacePage({
     const advance = () => {
       setPlaybackSeconds(
         cue -
-          RECORDING_LEAD_IN_SECONDS +
-          Math.min(
-            RECORDING_LEAD_IN_SECONDS,
-            (performance.now() - startedAt) / 1000,
-          ),
+        RECORDING_LEAD_IN_SECONDS +
+        Math.min(
+          RECORDING_LEAD_IN_SECONDS,
+          (performance.now() - startedAt) / 1000,
+        ),
       )
       recordingFrameRef.current = requestAnimationFrame(advance)
     }
@@ -484,13 +486,13 @@ export function WorkspacePage({
     setLiveTake((current) =>
       current?.dialogueId === selected.id
         ? appendLiveSample(
-            current,
-            elapsedSeconds + RECORDING_LEAD_IN_SECONDS,
-            sampleDuration.seconds +
-              RECORDING_LEAD_IN_SECONDS +
-              RECORDING_TAIL_SECONDS,
-            amplitude,
-          )
+          current,
+          elapsedSeconds + RECORDING_LEAD_IN_SECONDS,
+          sampleDuration.seconds +
+          RECORDING_LEAD_IN_SECONDS +
+          RECORDING_TAIL_SECONDS,
+          amplitude,
+        )
         : current,
     )
   }
@@ -606,9 +608,9 @@ export function WorkspacePage({
     setProject((current) =>
       current
         ? {
-            ...current,
-            voiceEffects: { ...current.voiceEffects, [dialogueId]: effect },
-          }
+          ...current,
+          voiceEffects: { ...current.voiceEffects, [dialogueId]: effect },
+        }
         : current,
     )
     const pending = effectSaveRef.current.then(() =>
@@ -656,11 +658,15 @@ export function WorkspacePage({
       >
         {!embedded && (
           <header className="flex items-center justify-between border-b border-border pb-5">
-            <Button asChild variant="ghost" size="sm">
-              <Link to="/projects">
+            {sidebar && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => sidebar.openSidebar('recordings')}
+              >
                 <ArrowLeft aria-hidden="true" /> RECORDINGS
-              </Link>
-            </Button>
+              </Button>
+            )}
             <span className="workspace-brand">
               <BrandLockup compact />
               <span>/ NOW DUBBING</span>
@@ -673,7 +679,7 @@ export function WorkspacePage({
           </header>
         )}
         {!pack || !project ? (
-          <p className="mt-12 text-muted-foreground">
+          <p className="mt-12 text-center text-muted-foreground">
             {projectUnavailable ? 'Project unavailable' : 'Loading project…'}
           </p>
         ) : (
@@ -690,7 +696,7 @@ export function WorkspacePage({
                 {pack.characters.length} characters ·{' '}
                 {timeline
                   ? timeline.requiredDialogueIds.length -
-                    timeline.missingDialogueIds.length
+                  timeline.missingDialogueIds.length
                   : 0}
                 /{timeline?.requiredDialogueIds.length ?? 0} assigned lines
                 complete
@@ -703,8 +709,8 @@ export function WorkspacePage({
                   className="flex items-stretch gap-3"
                 >
                   <AudioLevelMeter levelDb={meterDb} />
-                  <div className="workspace-monitor min-w-0 flex-1 overflow-hidden bg-black">
-                    <div className="relative aspect-video w-full bg-black">
+                  <div className="workspace-monitor min-w-0 flex-1 overflow-hidden">
+                    <div className="relative aspect-video w-full">
                       {previewUrl ? (
                         <video
                           ref={videoRef}
@@ -743,7 +749,7 @@ export function WorkspacePage({
                               const elapsed = Math.max(
                                 0,
                                 event.currentTarget.currentTime -
-                                  range.startSeconds,
+                                range.startSeconds,
                               )
                               if (Math.abs(audio.currentTime - elapsed) > 0.2)
                                 audio.currentTime = elapsed
@@ -769,7 +775,7 @@ export function WorkspacePage({
                           }}
                         />
                       ) : (
-                        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                        <div className="flex h-full items-center justify-center bg-black px-6 text-center text-sm text-muted-foreground">
                           {previewUnavailable
                             ? 'Video preview unavailable'
                             : 'Preparing an MP4 preview from the source OGV…'}
@@ -845,14 +851,14 @@ export function WorkspacePage({
                           if (!range) return
                           if (
                             range.startSeconds +
-                              event.currentTarget.currentTime >=
+                            event.currentTarget.currentTime >=
                             range.endSeconds
                           )
                             finishSourceClip()
                           else
                             setPlaybackSeconds(
                               range.startSeconds +
-                                event.currentTarget.currentTime,
+                              event.currentTarget.currentTime,
                             )
                         }}
                       />
@@ -878,6 +884,7 @@ export function WorkspacePage({
                 <section
                   aria-label="Dialogue list"
                   className="overflow-hidden rounded-lg border border-border bg-card"
+                  data-empty={showClips && visibleDialogues.length === 0 ? '' : undefined}
                 >
                   <div className="grid grid-cols-2 border-b border-border sm:grid-cols-[1.6fr_0.8fr_1fr_auto]">
                     <div className="border-r border-border p-4">
@@ -896,7 +903,7 @@ export function WorkspacePage({
                         <span className="text-xs font-bold text-primary">
                           {timeline
                             ? timeline.requiredDialogueIds.length -
-                              timeline.missingDialogueIds.length
+                            timeline.missingDialogueIds.length
                             : 0}{' '}
                           / {timeline?.requiredDialogueIds.length ?? 0}
                         </span>
@@ -1003,17 +1010,17 @@ export function WorkspacePage({
                                 take.dialogueId === dialogue.id &&
                                 take.selected,
                             ) && (
-                              <span
-                                className="text-[10px] font-bold text-primary"
-                                aria-label="Recorded"
-                              >
-                                ✓
-                              </span>
-                            )}
+                                <span
+                                  className="text-[10px] font-bold text-primary"
+                                  aria-label="Recorded"
+                                >
+                                  ✓
+                                </span>
+                              )}
                           </button>
                         ))}
                         {visibleDialogues.length === 0 && (
-                          <p className="text-sm text-muted-foreground">
+                          <p className="col-span-full text-center text-sm text-muted-foreground">
                             No dialogue matches the enabled roles.
                           </p>
                         )}
@@ -1045,9 +1052,9 @@ export function WorkspacePage({
                     )}
                     maxDurationSeconds={
                       videoReady &&
-                      sampleDuration?.ref === selected.sourceRef &&
-                      Number.isFinite(sampleDuration.seconds) &&
-                      sampleDuration.seconds > 0
+                        sampleDuration?.ref === selected.sourceRef &&
+                        Number.isFinite(sampleDuration.seconds) &&
+                        sampleDuration.seconds > 0
                         ? sampleDuration.seconds
                         : null
                     }
@@ -1154,7 +1161,7 @@ export function WorkspacePage({
                   ref={rolesDialogRef}
                   tabIndex={-1}
                   aria-label="Choose roles"
-                  className="roles-dialog rounded-2xl border border-border bg-card p-6 text-foreground"
+                  className="roles-dialog border border-border bg-card p-6 text-foreground"
                 >
                   <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
                     <div>

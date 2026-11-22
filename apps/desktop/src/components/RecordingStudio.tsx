@@ -578,7 +578,7 @@ export function RecordingStudio({
         ref={settingsRef}
         tabIndex={-1}
         aria-label="Microphone settings"
-        className="microphone-dialog rounded-2xl border border-border bg-card p-0 text-foreground"
+        className="microphone-dialog border border-border bg-card p-0 text-foreground"
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <h3 className="font-semibold">Microphone settings</h3>

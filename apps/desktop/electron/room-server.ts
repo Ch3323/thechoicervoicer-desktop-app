@@ -541,8 +541,9 @@ export async function startRoomServer(options: RoomServerOptions) {
     path: string,
     range: string | undefined,
     mime: string,
+    packDownload = false,
   ) {
-    const file = await stat(path)
+    const file = await (packDownload ? lstat : stat)(path)
     if (!file.isFile()) throw new Error('Media unavailable')
     let start = 0
     let end = file.size - 1
@@ -573,7 +574,13 @@ export async function startRoomServer(options: RoomServerOptions) {
       .header('Accept-Ranges', 'bytes')
       .header('Content-Length', end - start + 1)
       .type(mime)
-    return reply.send(createReadStream(path, { start, end }))
+    return reply.send(
+      createReadStream(path, {
+        start,
+        end,
+        highWaterMark: packDownload ? 512 * 1024 : undefined,
+      }),
+    )
   }
   const MediaQuery = z.object({ token: z.string().uuid() })
   const PackQuery = z.object({ code: RoomCodeSchema })
@@ -677,12 +684,12 @@ export async function startRoomServer(options: RoomServerOptions) {
         .refine(isPackFileName)
         .parse((request.params as { name: string }).name)
       const path = join(folder, name)
-      if (!(await lstat(path)).isFile()) return reply.code(404).send()
-      return sendMedia(
+      return await sendMedia(
         reply,
         path,
         request.headers.range,
         'application/octet-stream',
+        true,
       )
     } catch {
       return reply.code(404).send()

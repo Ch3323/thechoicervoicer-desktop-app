@@ -322,7 +322,7 @@ export function WatchDubDialog({
           <X aria-hidden="true" />
         </Button>
       </div>
-      <div className="mt-3 aspect-video overflow-hidden rounded bg-black">
+      <div className="mt-3 aspect-video overflow-hidden rounded">
         {previewUrl ? (
           <video
             ref={videoRef}
@@ -331,7 +331,7 @@ export function WatchDubDialog({
             muted
             controls
             playsInline
-            className="h-full w-full object-contain"
+            className="h-full w-full bg-black object-contain"
             onPlaying={(event) => {
               syncBacking(event.currentTarget)
               syncTakes(event.currentTarget)
@@ -368,7 +368,7 @@ export function WatchDubDialog({
             }}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-full items-center justify-center text-center text-sm text-muted-foreground">
             {busy ? `${message} ${progress}%` : previewUnavailable ? 'Preview unavailable' : 'Preparing preview…'}
           </div>
         )}

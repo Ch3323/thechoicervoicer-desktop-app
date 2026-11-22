@@ -1,14 +1,13 @@
 import { reportError } from '@/lib/error-toast'
 import { useCallback, useEffect, useState } from 'react'
+import { Link, useMatch, useNavigate, useOutlet } from 'react-router-dom'
 import {
-  AudioLines,
   Archive,
-  Box,
+  Compass,
   FolderOpen,
   Info,
   Moon,
   Search,
-  Settings2,
   Trash2,
   Upload,
   X,
@@ -25,6 +24,11 @@ import { PackThumbnail } from '@/components/PackThumbnail'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ImportProgressDialog } from '@/components/ImportProgressDialog'
 import { SessionTopBar } from '@/components/SessionTopBar'
+import {
+  StudioSidebar,
+  type StudioSidebarContext,
+  type StudioSidebarSection,
+} from '@/components/StudioSidebar'
 import { BrandLockup } from '@/components/BrandLockup'
 import { UpdateControls } from '@/components/UpdateControls'
 import { DriveSettings } from '@/components/DriveSettings'
@@ -61,9 +65,16 @@ export function HomePage({
   const [packs, setPacks] = useState<DubPack[]>([])
   const [projects, setProjects] = useState<DubbingProject[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
-  const [sidebarSection, setSidebarSection] = useState<
-    'packs' | 'recordings' | 'settings' | null
-  >(null)
+  const [sidebarSection, setSidebarSection] =
+    useState<StudioSidebarSection | null>(null)
+  const navigate = useNavigate()
+  const page = useOutlet({
+    openSidebar: setSidebarSection,
+  } satisfies StudioSidebarContext)
+  const workspaceRoute = useMatch('/workspace/:projectId')
+  const exportRoute = useMatch('/export/:projectId')
+  const routedProjectId =
+    workspaceRoute?.params.projectId ?? exportRoute?.params.projectId
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -82,6 +93,15 @@ export function HomePage({
   >({})
   const [recordedProjectIds, setRecordedProjectIds] = useState<string[]>([])
   const [progressLoading, setProgressLoading] = useState(false)
+
+  useEffect(
+    () => window.studio.onOnlinePackImported?.((pack) => {
+      setPacks((current) =>
+        current.some(({ id }) => id === pack.id) ? current : [...current, pack],
+      )
+    }),
+    [],
+  )
 
   useEffect(() => {
     if (!window.studio.getRoom) return
@@ -105,7 +125,10 @@ export function HomePage({
     Promise.all([window.studio.listPacks(), window.studio.listProjects()]).then(
       ([packList, projectList]) => {
         if (!active) return
-        setPacks(packList)
+        setPacks((current) => [
+          ...packList,
+          ...current.filter((pack) => !packList.some(({ id }) => id === pack.id)),
+        ])
         setProjects(projectList)
         if (window.studio.listTakes)
           void Promise.all(
@@ -147,7 +170,7 @@ export function HomePage({
   }, [])
 
   const activeProject = projects.find(
-    (project) => project.id === activeProjectId,
+    (project) => project.id === (routedProjectId ?? activeProjectId),
   )
   const activePack = packs.find((pack) => pack.id === activeProject?.packId)
   const visiblePacks = packs.filter((pack) =>
@@ -216,6 +239,12 @@ export function HomePage({
     await loadPack(pack, createNew)
   }
 
+  function activateProject(id: string) {
+    setActiveProjectId(id)
+    setSidebarSection(null)
+    if (page) void navigate('/')
+  }
+
   async function loadPack(pack: DubPack, createNew = false) {
     if (busy || loading) return
     setBusy(true)
@@ -240,8 +269,7 @@ export function HomePage({
         : (recorded.find((item) => item.hasTake)?.project ?? candidates[0])
       const project = existing ?? (await window.studio.createProject(pack.id))
       if (!existing) setProjects((current) => [...current, project])
-      setActiveProjectId(project.id)
-      setSidebarSection(null)
+      activateProject(project.id)
     } catch (reason) {
       reportError(reason)
     } finally {
@@ -272,10 +300,7 @@ export function HomePage({
       const project = await window.studio.createProject(pack.id)
       setProjects((current) => [...current, project])
       if (roomInfo) setPendingPack({ pack, projectId: project.id })
-      else {
-        setActiveProjectId(project.id)
-        setSidebarSection(null)
-      }
+      else activateProject(project.id)
     } catch (reason) {
       reportError(reason)
     } finally {
@@ -301,7 +326,16 @@ export function HomePage({
           nextProjects.some((project) => project.id === id),
         ),
       )
-      if (activePack?.id === pack.id) setActiveProjectId(null)
+      if (
+        activeProjectId &&
+        !nextProjects.some((project) => project.id === activeProjectId)
+      )
+        setActiveProjectId(null)
+      if (
+        routedProjectId &&
+        !nextProjects.some((project) => project.id === routedProjectId)
+      )
+        void navigate('/')
     } catch (reason) {
       reportError(reason)
     } finally {
@@ -331,6 +365,7 @@ export function HomePage({
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]?.id ??
             null,
         )
+      if (routedProjectId === project.id) void navigate('/')
     } catch (reason) {
       reportError(reason)
     } finally {
@@ -345,6 +380,7 @@ export function HomePage({
         window.studio.listProjects(),
         window.studio.listPacks(),
       ])
+      setPacks(packList)
       const entries = await Promise.all(
         projectList.map(async (project) => {
           const pack = packList.find((item) => item.id === project.packId)
@@ -364,7 +400,6 @@ export function HomePage({
         }),
       )
       setProjects(projectList)
-      setPacks(packList)
       setRecordedProjectIds(
         entries.filter((entry) => entry?.[1].hasTake).map((entry) => entry![0]),
       )
@@ -389,58 +424,34 @@ export function HomePage({
     return () => window.clearTimeout(timer)
   }, [inRoom, refreshRecordingProgress, sidebarSection])
 
-  function toggleSidebar(section: 'packs' | 'recordings' | 'settings') {
-    const next = sidebarSection === section ? null : section
-    setSidebarSection(next)
+  function toggleSidebar(section: StudioSidebarSection) {
+    setSidebarSection((current) => (current === section ? null : section))
   }
 
   return (
     <div
-      className={`studio-app studio-home-shell text-foreground ${sidebarSection ? 'sidebar-open' : ''}`}
+      className={`studio-app text-foreground ${page ? 'studio-page-shell' : 'studio-home-shell'} ${sidebarSection ? 'sidebar-open' : ''}`}
     >
-      <SessionTopBar
-        title={
-          activeSession === 'single'
-            ? activePack?.metadata.title
-            : roomInfo?.state.pack?.metadata.title
-        }
-        roomCode={roomInfo?.state.code}
-        onOpenRoom={() => setRoomModalOpen(true)}
-        onLeaveRoom={roomInfo ? () => setConfirmLeaveRoom(true) : undefined}
-        leavingRoom={leavingRoom}
+      {!page && (
+        <SessionTopBar
+          title={
+            activeSession === 'single'
+              ? activePack?.metadata.title
+              : roomInfo?.state.pack?.metadata.title
+          }
+          roomCode={roomInfo?.state.code}
+          onOpenRoom={() => setRoomModalOpen(true)}
+          onLeaveRoom={roomInfo ? () => setConfirmLeaveRoom(true) : undefined}
+          leavingRoom={leavingRoom}
+        />
+      )}
+      <StudioSidebar
+        panels={{ active: sidebarSection, onToggle: toggleSidebar }}
+        sessionLayout={!page}
       />
-      <nav
-        className="home-icon-rail !top-[68px] !h-[calc(100vh-68px)]"
-        aria-label="Home menu"
-      >
-        <button
-          type="button"
-          aria-label="Packs menu"
-          aria-expanded={sidebarSection === 'packs'}
-          onClick={() => toggleSidebar('packs')}
-        >
-          <Box aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          aria-label="Recordings menu"
-          aria-expanded={sidebarSection === 'recordings'}
-          onClick={() => toggleSidebar('recordings')}
-        >
-          <AudioLines aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          aria-label="Settings menu"
-          aria-expanded={sidebarSection === 'settings'}
-          onClick={() => toggleSidebar('settings')}
-        >
-          <Settings2 aria-hidden="true" />
-        </button>
-      </nav>
       {sidebarSection && (
         <aside
-          className="home-sidebar !top-[68px] !h-[calc(100vh-68px)]"
+          className={page ? 'home-sidebar' : 'home-sidebar home-sidebar--session'}
           aria-label="Studio sidebar"
         >
           <div className="home-sidebar-brand">
@@ -616,17 +627,14 @@ export function HomePage({
                           </h2>
                         )}
                         <div
-                          className={`home-recording-row ${project.id === activeProjectId ? 'active' : ''}`}
+                          className={`home-recording-row ${project.id === activeProject?.id ? 'active' : ''}`}
                         >
                           <button
                             type="button"
                             onClick={() => {
                               if (roomInfo && pack) {
                                 setPendingPack({ pack, projectId: project.id })
-                              } else {
-                                setActiveProjectId(project.id)
-                                setSidebarSection(null)
-                              }
+                              } else activateProject(project.id)
                             }}
                             disabled={busy}
                             aria-label={`Open recording ${pack?.metadata.title ?? project.id}`}
@@ -709,9 +717,10 @@ export function HomePage({
           </div>
         </aside>
       )}
-      <main className="home-content">
+      {page && <div className="min-w-0">{page}</div>}
+      <main className="home-content" hidden={Boolean(page)}>
         <div className="home-content-body">
-          {activeSession === 'single' &&
+          {!page && activeSession === 'single' &&
             (activeProjectId && activePack ? (
               <WorkspacePage
                 key={activeProjectId}
@@ -732,14 +741,22 @@ export function HomePage({
                   <Archive aria-hidden="true" />
                   <strong>YOUR SCENE STARTS HERE</strong>
                   <span>
-                    Choose a pack in the sidebar or upload one from your device.
+                    Choose a pack in the sidebar, browse online packs, or upload
+                    one from your device.
                   </span>
-                  <Button
-                    onClick={() => void importPack()}
-                    disabled={busy || loading}
-                  >
-                    <Upload aria-hidden="true" /> UPLOAD DUB PACK
-                  </Button>
+                  <div className="flex flex-wrap justify-center gap-3">
+                    <Button
+                      onClick={() => void importPack()}
+                      disabled={busy || loading}
+                    >
+                      <Upload aria-hidden="true" /> UPLOAD DUB PACK
+                    </Button>
+                    <Button asChild variant="outline">
+                      <Link to="/browse">
+                        <Compass aria-hidden="true" /> BROWSE DUB PACKS
+                      </Link>
+                    </Button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -941,8 +958,7 @@ export function HomePage({
             void (async () => {
               if (!(await leaveRoom())) return
               if (selection.projectId) {
-                setActiveProjectId(selection.projectId)
-                setSidebarSection(null)
+                activateProject(selection.projectId)
               } else await loadPack(selection.pack, selection.createNew)
             })()
           }}

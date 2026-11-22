@@ -103,6 +103,53 @@ const api: DesktopApi = {
   roomExport: (options) => ipcRenderer.invoke('room:export', options),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   listPacks: () => ipcRenderer.invoke('library:list-packs'),
+  browseOnlinePacks: (page, category, order, searchTerm) =>
+    ipcRenderer.invoke(
+      'gamebanana:browse-packs',
+      page,
+      category,
+      order,
+      searchTerm,
+    ),
+  listOnlinePackCategories: () =>
+    ipcRenderer.invoke('gamebanana:pack-categories'),
+  getOnlinePack: (packId) => ipcRenderer.invoke('gamebanana:get-pack', packId),
+  getOnlinePackArchiveContents: (packId, fileId) =>
+    ipcRenderer.invoke('gamebanana:archive-contents', packId, fileId),
+  getOnlinePackActivity: (packId, kind, page, parentPostId) =>
+    ipcRenderer.invoke(
+      'gamebanana:pack-activity',
+      packId,
+      kind,
+      page,
+      parentPostId,
+    ),
+  downloadOnlinePack: (packId, fileId, destination) =>
+    ipcRenderer.invoke('gamebanana:download-pack', packId, fileId, destination),
+  cancelOnlinePackDownload: (packId, fileId) =>
+    ipcRenderer.invoke('gamebanana:cancel-download', packId, fileId),
+  getOnlinePackDownloads: () => ipcRenderer.invoke('gamebanana:get-downloads'),
+  clearFinishedOnlinePackDownloads: () =>
+    ipcRenderer.invoke('gamebanana:clear-finished-downloads'),
+  onOnlinePackDownloadsChanged: (callback) => {
+    const channel = 'gamebanana:downloads-changed'
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: Parameters<typeof callback>[0],
+    ) => callback(snapshot)
+    ipcRenderer.on(channel, listener)
+    return () => ipcRenderer.removeListener(channel, listener)
+  },
+  onOnlinePackImported: (callback) => {
+    const channel = 'gamebanana:pack-imported'
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      pack: Parameters<typeof callback>[0],
+    ) => callback(pack)
+    ipcRenderer.on(channel, listener)
+    return () => ipcRenderer.removeListener(channel, listener)
+  },
+  openOnlinePackLink: (url) => ipcRenderer.invoke('gamebanana:open-link', url),
   getPack: (packId) => ipcRenderer.invoke('library:get-pack', packId),
   importPack: () => ipcRenderer.invoke('library:import-pack'),
   onImportProgress: (callback) => {

@@ -21,6 +21,7 @@ import type {
   VoiceEffect,
 } from './models'
 import type { WaveformSnapshot } from './waveform'
+import { z } from 'zod'
 import type {
   DiscoveredRoom,
   RoomExitReason,
@@ -33,6 +34,142 @@ export interface ImportProgress {
   completedBytes: number
   totalBytes: number
 }
+
+export interface OnlinePackListing {
+  id: number
+  title: string
+  submitter?: string
+  thumbnailUrl?: string
+  hasContentNotice: boolean
+  categoryId?: number
+}
+
+export interface OnlinePackCategory {
+  id: number
+  name: string
+}
+
+export const ONLINE_PACK_PAGE_SIZE = 48
+export const ONLINE_PACK_SEARCH_MAX_LENGTH = 120
+export const OnlinePackSearchSchema = z
+  .string()
+  .trim()
+  .max(ONLINE_PACK_SEARCH_MAX_LENGTH)
+
+export const OnlinePackOrderSchema = z.enum([
+  'oldest',
+  'updated',
+  'title-asc',
+  'title-desc',
+  'most-liked',
+  'most-downloaded',
+])
+export type OnlinePackOrder = z.infer<typeof OnlinePackOrderSchema>
+
+export interface OnlinePackPage {
+  packs: OnlinePackListing[]
+  hasNextPage: boolean
+}
+
+export interface OnlinePackFile {
+  id: number
+  name: string
+  size: number
+  canDownload: boolean
+  descriptionHtml?: string
+  added?: number
+  downloads?: number
+  scanResult?: string
+  archived?: boolean
+  hasContents?: boolean
+}
+
+export interface OnlinePackArchiveEntry {
+  name: string
+  children?: OnlinePackArchiveEntry[]
+}
+
+export interface OnlinePackDetails extends OnlinePackListing {
+  summary?: string
+  descriptionHtml?: string
+  images: { url: string; caption?: string }[]
+  files: OnlinePackFile[]
+  visibility?: string
+  ratings: string[]
+  version?: string
+  game?: string
+  category?: string
+  added?: number
+  updated?: number
+  obsolete?: boolean
+  withholdNotice?: {
+    date?: number
+    type?: string
+    rules: { code?: string; descriptionHtml?: string; fixHtml?: string }[]
+  }
+  tags: string[]
+  credits: { group: string; authors: { name: string; role?: string }[] }[]
+  studios: string[]
+  mirrors: string[]
+  licenseHtml?: string
+  permissions: { label: string; terms: string[] }[]
+  counts: {
+    views?: number
+    downloads?: number
+    likes?: number
+    subscribers?: number
+    updates?: number
+    comments?: number
+    todos?: number
+  }
+}
+
+export type OnlinePackActivityKind = 'updates' | 'comments' | 'issues' | 'todos'
+
+export interface OnlinePackActivityPage {
+  entries: {
+    id: number
+    title?: string
+    author?: string
+    added?: number
+    bodyHtml?: string
+    version?: string
+    state?: string
+    replyCount?: number
+    changes: { category: string; text: string }[]
+    files?: string[]
+  }[]
+  hasNextPage: boolean
+}
+
+export interface OnlinePackDownloadProgress {
+  packId: number
+  fileId: number
+  phase: 'preparing' | 'queued' | 'downloading' | 'importing'
+  percent?: number
+}
+
+export type OnlinePackDownloadEntry = OnlinePackDownloadProgress & {
+  name: string
+  size: number
+} & (
+  | { status: 'working'; cancelling?: boolean }
+  | { status: 'imported'; title: string }
+  | { status: 'saved' | 'cancelled' | 'error' }
+)
+
+export interface OnlinePackDownloadsSnapshot {
+  revision: number
+  downloads: OnlinePackDownloadEntry[]
+  completedBytes: number
+}
+
+export type OnlinePackDownloadDestination = 'app' | 'device'
+
+export type OnlinePackDownloadResult =
+  | { kind: 'imported'; pack: DubPack }
+  | { kind: 'saved'; name: string }
+  | { kind: 'cancelled' }
 
 export interface PreviewTakeAudio {
   bytes: Uint8Array
@@ -145,6 +282,37 @@ export interface DesktopApi {
   roomExport(options: ExportOptions): Promise<ExportResult | null>
   getAppVersion(): Promise<string>
   listPacks(): Promise<DubPack[]>
+  browseOnlinePacks(
+    page: number,
+    categoryId?: number,
+    order?: OnlinePackOrder,
+    searchTerm?: string,
+  ): Promise<OnlinePackPage>
+  listOnlinePackCategories(): Promise<OnlinePackCategory[]>
+  getOnlinePack(packId: number): Promise<OnlinePackDetails>
+  getOnlinePackArchiveContents(
+    packId: number,
+    fileId: number,
+  ): Promise<OnlinePackArchiveEntry[]>
+  getOnlinePackActivity(
+    packId: number,
+    kind: OnlinePackActivityKind,
+    page: number,
+    parentPostId?: number,
+  ): Promise<OnlinePackActivityPage>
+  downloadOnlinePack(
+    packId: number,
+    fileId: number,
+    destination: OnlinePackDownloadDestination,
+  ): Promise<OnlinePackDownloadResult | null>
+  cancelOnlinePackDownload(packId: number, fileId: number): Promise<void>
+  getOnlinePackDownloads(): Promise<OnlinePackDownloadsSnapshot>
+  clearFinishedOnlinePackDownloads(): Promise<void>
+  onOnlinePackDownloadsChanged(
+    callback: (snapshot: OnlinePackDownloadsSnapshot) => void,
+  ): () => void
+  onOnlinePackImported(callback: (pack: DubPack) => void): () => void
+  openOnlinePackLink(url: string): Promise<void>
   importPack(): Promise<DubPack | null>
   onImportProgress(callback: (progress: ImportProgress) => void): () => void
   removePack(packId: string): Promise<void>
